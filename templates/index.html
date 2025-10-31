@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aria-Haptic Alignment Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h1>🎯 Aria-Haptic Time Alignment Tool</h1>
+                <a href="/visualize" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
+                    <span>📊</span>
+                    <span>数据可视化</span>
+                </a>
+            </div>
+            <p class="subtitle">对齐 Project Aria 手部追踪数据与触觉传感器数据</p>
+        </header>
+
+        {% if not aria_api_available %}
+        <div class="warning-banner">
+            <h3>⚠️ aria_api 未安装</h3>
+            <p>VRS 文件处理功能不可用。如需完整功能，请安装 aria_api 库。</p>
+            <p>安装方法：请参考内部文档或联系开发团队。</p>
+        </div>
+        {% endif %}
+
+        <div class="main-content">
+            <!-- File Upload Section -->
+            <section class="upload-section">
+                <h2>📁 上传数据文件</h2>
+
+                <!-- Mode Selector -->
+                <div class="mode-selector">
+                    <label class="mode-option">
+                        <input type="radio" name="upload_mode" value="mps_csv" id="mode-mps-csv" checked>
+                        <span class="mode-label">
+                            <strong>MPS CSV 模式</strong>
+                            <small>上传 MPS 生成的 hand_tracking_results.csv（推荐，无需 aria_api）</small>
+                        </span>
+                    </label>
+                    <label class="mode-option">
+                        <input type="radio" name="upload_mode" value="vrs" id="mode-vrs" {% if not aria_api_available %}disabled{% endif %}>
+                        <span class="mode-label">
+                            <strong>VRS 模式</strong>
+                            <small>上传 VRS 文件（需要 aria_api，文件较大）</small>
+                            {% if not aria_api_available %}<span class="mode-disabled">（aria_api 未安装）</span>{% endif %}
+                        </span>
+                    </label>
+                </div>
+
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="file-input-group">
+                        <!-- MPS CSV File Input -->
+                        <div class="file-input-wrapper" id="mps-file-wrapper">
+                            <label for="mps_file">MPS CSV 文件：</label>
+                            <input type="file" id="mps_file" name="mps_file" accept=".csv">
+                            <span class="file-info" id="mps-info">未选择文件</span>
+                        </div>
+
+                        <!-- VRS File Input -->
+                        <div class="file-input-wrapper" id="vrs-file-wrapper" style="display: none;">
+                            <label for="vrs_file">VRS 文件：</label>
+                            <input type="file" id="vrs_file" name="vrs_file" accept=".vrs">
+                            <span class="file-info" id="vrs-info">未选择文件</span>
+                        </div>
+
+                        <!-- Haptic CSV File Input -->
+                        <div class="file-input-wrapper">
+                            <label for="haptic_file">触觉 CSV 文件：</label>
+                            <input type="file" id="haptic_file" name="haptic_file" accept=".csv" required>
+                            <span class="file-info" id="haptic-info">未选择文件</span>
+                        </div>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Parameters Section -->
+            <section class="parameters-section">
+                <h2>⚙️ 对齐参数</h2>
+                <div class="parameters-grid">
+                    <div class="param-group">
+                        <label for="max_offset">最大偏移范围 (秒)：</label>
+                        <input type="number" id="max_offset" name="max_offset" value="5.0" min="0.1" max="30" step="0.1">
+                        <span class="param-help">搜索时间偏移的最大范围</span>
+                    </div>
+
+                    <div class="param-group">
+                        <label for="method">对齐方法：</label>
+                        <select id="method" name="method">
+                            <option value="xcorr" selected>交叉相关 (推荐)</option>
+                            <option value="pearson">Pearson 相关</option>
+                            <option value="dtw">动态时间规整 (慢)</option>
+                            <option value="mi">互信息 (慢)</option>
+                            <option value="hybrid">混合方法 (慢)</option>
+                        </select>
+                        <span class="param-help">选择相似度计算方法</span>
+                    </div>
+
+                    <div class="param-group">
+                        <label for="force_threshold">力度阈值 (N)：</label>
+                        <input type="number" id="force_threshold" name="force_threshold" value="1.0" min="0" max="100" step="0.1">
+                        <span class="param-help">片段检测的最小力度值</span>
+                    </div>
+
+                    <div class="param-group">
+                        <label for="smooth_window">平滑窗口大小：</label>
+                        <input type="number" id="smooth_window" name="smooth_window" value="5" min="1" max="50" step="1">
+                        <span class="param-help">降噪平滑滤波器窗口</span>
+                    </div>
+
+                    <div class="param-group checkbox-group">
+                        <label>
+                            <input type="checkbox" id="export_segments" name="export_segments" checked>
+                            检测并导出力度片段
+                        </label>
+                        <span class="param-help">自动识别力度片段分割点</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Action Button -->
+            <div class="action-section">
+                <button id="alignBtn" class="btn-primary">
+                    <span class="btn-icon">▶️</span>
+                    开始对齐分析
+                </button>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+                <div class="spinner"></div>
+                <p>正在处理数据，请稍候...</p>
+            </div>
+
+            <!-- Results Section -->
+            <section id="resultsSection" class="results-section" style="display: none;">
+                <h2>📊 对齐结果</h2>
+
+                <!-- Stats Cards -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">最优时间偏移</div>
+                        <div class="stat-value" id="optimal-offset">-</div>
+                        <div class="stat-unit">秒</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-label">相似度得分</div>
+                        <div class="stat-value" id="similarity-score">-</div>
+                        <div class="stat-unit">0-1 范围</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-label">Aria 样本数</div>
+                        <div class="stat-value" id="aria-samples">-</div>
+                        <div class="stat-unit">帧</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-label">触觉样本数</div>
+                        <div class="stat-value" id="haptic-samples">-</div>
+                        <div class="stat-unit">点</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-label">检测到的片段</div>
+                        <div class="stat-value" id="segment-count">-</div>
+                        <div class="stat-unit">个</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-label">对齐方法</div>
+                        <div class="stat-value" id="method-used" style="font-size: 1.2rem;">-</div>
+                        <div class="stat-unit">&nbsp;</div>
+                    </div>
+                </div>
+
+                <!-- Interactive Offset Slider -->
+                <div class="offset-slider-section">
+                    <h3>🎚️ 交互式 Offset 调整</h3>
+                    <div class="slider-container">
+                        <div class="slider-header">
+                            <div class="slider-label">
+                                <span>时间偏移 (秒):</span>
+                                <span id="current-offset" class="offset-value">0.000</span>
+                            </div>
+                            <div class="slider-info">
+                                <span>相似度得分:</span>
+                                <span id="current-similarity" class="similarity-value">-</span>
+                            </div>
+                        </div>
+                        <input type="range"
+                               id="offset-slider"
+                               class="offset-slider"
+                               min="0"
+                               max="5"
+                               step="0.01"
+                               value="0">
+                        <div class="slider-marks">
+                            <span>0s</span>
+                            <span id="max-offset-label">5s</span>
+                        </div>
+                        <div class="slider-buttons">
+                            <button id="apply-offset-btn" class="btn-apply">
+                                <span class="btn-icon">✓</span>
+                                应用更改
+                            </button>
+                            <button id="reset-offset-btn" class="btn-reset">
+                                <span class="btn-icon">🔄</span>
+                                重置为最优值
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Interactive Plot -->
+                <div class="plot-container">
+                    <div id="plotly-chart"></div>
+                </div>
+
+                <!-- Download Button -->
+                <div id="downloadSection" class="download-section" style="display: none;">
+                    <button id="downloadBtn" class="btn-secondary">
+                        <span class="btn-icon">💾</span>
+                        下载片段 CSV 文件
+                    </button>
+                </div>
+            </section>
+
+            <!-- Error Display -->
+            <div id="errorSection" class="error-section" style="display: none;">
+                <h3>❌ 错误信息</h3>
+                <div id="errorMessage"></div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

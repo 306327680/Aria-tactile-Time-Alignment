@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据可视化 - Aria-Haptic Alignment Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .tab-button {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #6c757d;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .tab-button:hover {
+            color: #667eea;
+        }
+
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+            width: 100%;
+        }
+
+        .tab-content.active {
+            display: block;
+            width: 100%;
+        }
+
+        .results-section .plot-container {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        #mps-chart,
+        #haptic-chart {
+            width: 100% !important;
+        }
+
+        /* Override section width for visualize page */
+        .tab-content section {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .tab-content .results-section {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .nav-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 6px;
+            border: 2px solid #667eea;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .nav-link:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .stats-inline {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .stat-inline {
+            display: flex;
+            gap: 8px;
+            align-items: baseline;
+        }
+
+        .stat-inline-label {
+            font-size: 0.85rem;
+            color: #6c757d;
+            font-weight: 500;
+        }
+
+        .stat-inline-value {
+            font-size: 1rem;
+            color: #667eea;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="nav-header">
+                <h1>📊 数据可视化工具</h1>
+                <a href="/" class="nav-link">
+                    <span>←</span>
+                    <span>返回对齐工具</span>
+                </a>
+            </div>
+            <p class="subtitle">单独查看 MPS 手部追踪数据和触觉传感器数据</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Tab Navigation -->
+            <div class="tabs">
+                <button class="tab-button active" data-tab="mps">MPS 手部追踪数据</button>
+                <button class="tab-button" data-tab="haptic">触觉传感器数据</button>
+            </div>
+
+            <!-- MPS Tab -->
+            <div class="tab-content active" id="tab-mps">
+                <section class="upload-section">
+                    <h2>📁 上传 MPS CSV 文件</h2>
+                    <form id="mpsForm" enctype="multipart/form-data">
+                        <div class="file-input-group">
+                            <div class="file-input-wrapper">
+                                <label for="mps_file">MPS CSV 文件：</label>
+                                <input type="file" id="mps_file" name="mps_file" accept=".csv" required>
+                                <span class="file-info" id="mps-file-info">未选择文件</span>
+                            </div>
+                        </div>
+                    </form>
+
+                    <div class="action-section">
+                        <button id="visualizeMpsBtn" class="btn-primary" disabled>
+                            <span class="btn-icon">📈</span>
+                            可视化 MPS 数据
+                        </button>
+                    </div>
+                </section>
+
+                <div id="mpsLoadingIndicator" class="loading-indicator" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>正在加载数据...</p>
+                </div>
+
+                <section id="mpsResultsSection" class="results-section" style="display: none;">
+                    <h2>📊 MPS 手部追踪数据</h2>
+                    <div class="stats-inline" id="mpsStats"></div>
+                    <div class="plot-container">
+                        <div id="mps-chart"></div>
+                    </div>
+                </section>
+
+                <div id="mpsErrorSection" class="error-section" style="display: none;">
+                    <h3>❌ 错误信息</h3>
+                    <div id="mpsErrorMessage"></div>
+                </div>
+            </div>
+
+            <!-- Haptic Tab -->
+            <div class="tab-content" id="tab-haptic">
+                <section class="upload-section">
+                    <h2>📁 上传触觉 CSV 文件</h2>
+                    <form id="hapticForm" enctype="multipart/form-data">
+                        <div class="file-input-group">
+                            <div class="file-input-wrapper">
+                                <label for="haptic_file">触觉 CSV 文件：</label>
+                                <input type="file" id="haptic_file" name="haptic_file" accept=".csv" required>
+                                <span class="file-info" id="haptic-file-info">未选择文件</span>
+                            </div>
+                        </div>
+                    </form>
+
+                    <div class="action-section">
+                        <button id="visualizeHapticBtn" class="btn-primary" disabled>
+                            <span class="btn-icon">📈</span>
+                            可视化触觉数据
+                        </button>
+                    </div>
+                </section>
+
+                <div id="hapticLoadingIndicator" class="loading-indicator" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>正在加载数据...</p>
+                </div>
+
+                <section id="hapticResultsSection" class="results-section" style="display: none;">
+                    <h2>📊 触觉传感器数据</h2>
+                    <div class="stats-inline" id="hapticStats"></div>
+                    <div class="plot-container">
+                        <div id="haptic-chart"></div>
+                    </div>
+                </section>
+
+                <div id="hapticErrorSection" class="error-section" style="display: none;">
+                    <h3>❌ 错误信息</h3>
+                    <div id="hapticErrorMessage"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/visualize.js') }}"></script>
+</body>
+</html>

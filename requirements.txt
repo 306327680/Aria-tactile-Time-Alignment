@@ -1,0 +1,17 @@
+# Aria-Haptic Alignment Web Application Requirements
+
+# Web Framework
+Flask==3.0.0
+Werkzeug==3.0.1
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Visualization
+matplotlib>=3.7.0
+plotly>=5.17.0
+
+# Project Aria (internal library - install separately)
+# aria_api

@@ -18,7 +18,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import interpolate, signal, optimize
 from typing import Tuple, Dict, Optional
-import aria_api
+
+# Try to import aria_api (optional for web app demo mode)
+try:
+    import aria_api
+    ARIA_API_AVAILABLE = True
+except ImportError:
+    ARIA_API_AVAILABLE = False
+    print("Warning: aria_api not found. VRS file processing will not be available.")
+    print("Please install aria_api to use full functionality.")
 
 
 class AriaHapticAligner:
@@ -26,16 +34,18 @@ class AriaHapticAligner:
     Aligns Aria hand tracking with haptic sensor data using temporal correlation.
     """
 
-    def __init__(self, vrs_path: str, haptic_csv_path: str):
+    def __init__(self, vrs_path: str = None, haptic_csv_path: str = None, mps_csv_path: str = None):
         """
         Initialize the aligner with data paths.
 
         Args:
-            vrs_path: Path to the VRS file (aria_api will auto-discover MPS)
+            vrs_path: Path to the VRS file (aria_api will auto-discover MPS). Optional if mps_csv_path is provided.
             haptic_csv_path: Path to the haptic sensor CSV file
+            mps_csv_path: Path to the MPS hand_tracking_results.csv file (alternative to VRS). Optional if vrs_path is provided.
         """
         self.vrs_path = vrs_path
         self.haptic_csv_path = haptic_csv_path
+        self.mps_csv_path = mps_csv_path
 
         # Data storage
         self.aria_timestamps = None
@@ -55,6 +65,13 @@ class AriaHapticAligner:
             timestamps: Array of timestamps (seconds from first valid data)
             distances: Array of thumb-index distances (meters)
         """
+        if not ARIA_API_AVAILABLE:
+            raise ImportError(
+                "aria_api is not installed. This is required for VRS file processing.\n"
+                "Please install aria_api according to the internal documentation.\n"
+                "If you're using this for demonstration, please use pre-processed data."
+            )
+
         # Use aria_api to load VRS and auto-discover MPS
         session = aria_api.AriaSession.from_vrs(self.vrs_path)
 
@@ -134,9 +151,143 @@ class AriaHapticAligner:
 
         return timestamps, distances
 
+    def load_aria_data_from_mps_csv(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Load Aria hand tracking data from MPS-generated CSV file.
+        This is an alternative to load_aria_data() that doesn't require aria_api.
+
+        The MPS CSV file (hand_tracking_results.csv) contains:
+        - tracking_timestamp_us: Timestamp in microseconds
+        - right_tracking_confidence: Confidence score for right hand
+        - tx_right_landmark_N_device, ty_right_landmark_N_device, tz_right_landmark_N_device:
+          3D coordinates for landmark N (N=0..20)
+
+        We use landmark 4 (thumb tip) and landmark 8 (index tip) to calculate pinch distance.
+
+        Returns:
+            timestamps: Array of timestamps (seconds from first valid data)
+            distances: Array of thumb-index distances (meters)
+        """
+        if self.mps_csv_path is None:
+            raise ValueError("mps_csv_path must be set to use this function")
+
+        # Read MPS CSV file
+        df = pd.read_csv(self.mps_csv_path)
+
+        print(f"Loaded MPS CSV with {len(df)} rows")
+
+        # Extract timestamps (convert from microseconds to seconds)
+        timestamps = df['tracking_timestamp_us'].values / 1e6
+
+        # Extract right hand confidence
+        confidence = df['right_tracking_confidence'].values
+
+        # Filter out low confidence data (< 0.5)
+        valid_mask = confidence > 0.5
+        print(f"Valid frames (confidence > 0.5): {np.sum(valid_mask)} / {len(valid_mask)}")
+
+        if np.sum(valid_mask) == 0:
+            raise RuntimeError("No valid hand tracking data found (all confidence scores below 0.5)")
+
+        # Extract thumb tip (landmark 4) coordinates
+        thumb_x = df['tx_right_landmark_4_device'].values[valid_mask]
+        thumb_y = df['ty_right_landmark_4_device'].values[valid_mask]
+        thumb_z = df['tz_right_landmark_4_device'].values[valid_mask]
+
+        # Extract index tip (landmark 8) coordinates
+        index_x = df['tx_right_landmark_8_device'].values[valid_mask]
+        index_y = df['ty_right_landmark_8_device'].values[valid_mask]
+        index_z = df['tz_right_landmark_8_device'].values[valid_mask]
+
+        # Calculate Euclidean distance between thumb and index
+        distances = np.sqrt(
+            (thumb_x - index_x)**2 +
+            (thumb_y - index_y)**2 +
+            (thumb_z - index_z)**2
+        )
+
+        # Get valid timestamps
+        timestamps = timestamps[valid_mask]
+
+        # Store original timestamps before normalization for reference
+        original_timestamps = timestamps.copy()
+        original_time_range = (original_timestamps[0], original_timestamps[-1])
+
+        # Normalize timestamps to start from 0
+        timestamps = timestamps - timestamps[0]
+
+        self.aria_timestamps = timestamps
+        self.aria_distance = distances
+
+        # Store additional statistics
+        self.mps_total_frames = len(df)
+        self.mps_valid_frames = np.sum(valid_mask)
+
+        # Try to load statistics from summary.json file in the same directory
+        self.mps_success_rate = None
+        self.mps_avg_confidence = None
+        self.mps_min_confidence = None
+        self.mps_max_confidence = None
+
+        try:
+            import json
+            # Get the directory of the MPS CSV file
+            mps_dir = os.path.dirname(self.mps_csv_path)
+            summary_json_path = os.path.join(mps_dir, 'summary.json')
+
+            if os.path.exists(summary_json_path):
+                print(f"Loading statistics from {summary_json_path}")
+                with open(summary_json_path, 'r') as f:
+                    summary_data = json.load(f)
+
+                # Use statistics from summary.json
+                self.mps_success_rate = summary_data.get('valid_frame_fraction', 0) * 100
+                self.mps_avg_confidence = summary_data.get('mean_confidence', 0)
+
+                print(f"Loaded from summary.json - Success rate: {self.mps_success_rate:.1f}%, Mean confidence: {self.mps_avg_confidence:.3f}")
+            else:
+                print(f"Summary file not found at {summary_json_path}, using CSV data")
+                # Fallback to CSV data calculation
+                self.mps_success_rate = (self.mps_valid_frames / self.mps_total_frames) * 100
+                self.mps_avg_confidence = confidence[valid_mask].mean()
+                self.mps_min_confidence = confidence[valid_mask].min()
+                self.mps_max_confidence = confidence[valid_mask].max()
+
+        except Exception as e:
+            print(f"Error loading summary.json: {e}, using CSV data calculation")
+            # Fallback to CSV data calculation
+            self.mps_success_rate = (self.mps_valid_frames / self.mps_total_frames) * 100
+            self.mps_avg_confidence = confidence[valid_mask].mean()
+            self.mps_min_confidence = confidence[valid_mask].min()
+            self.mps_max_confidence = confidence[valid_mask].max()
+
+        # Store original time range for display purposes
+        self.mps_original_time_range = original_time_range
+
+        print(f"Loaded {len(timestamps)} Aria hand tracking frames from MPS CSV")
+        print(f"Original time range: {original_time_range[0]:.2f}s to {original_time_range[1]:.2f}s")
+        print(f"Normalized time range: {timestamps[0]:.2f}s to {timestamps[-1]:.2f}s")
+        print(f"Distance range: {distances.min():.4f}m to {distances.max():.4f}m")
+        if self.mps_success_rate is not None:
+            print(f"Success rate: {self.mps_success_rate:.1f}%")
+        if self.mps_avg_confidence is not None:
+            print(f"Mean confidence: {self.mps_avg_confidence:.3f}")
+
+        return timestamps, distances
+
     def load_haptic_data(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Load haptic sensor CSV data and extract finger force magnitudes.
+        Supports both GEN3 format and legacy formats.
+
+        GEN3 Format (Version 3):
+            - Timestamp, Sample_Index, Relative_Time_ms
+            - {Sensor}_Fx, {Sensor}_Fy, {Sensor}_Fz, {Sensor}_Total
+            - Sensors: ThumbTip, IndexTip, MiddleTip, RingTip, PinkyTip
+
+        Legacy Formats:
+            - timestamp/relative_time columns
+            - {Sensor}_magnitude columns
 
         Returns:
             timestamps: Array of timestamps (seconds from first valid data)
@@ -145,45 +296,118 @@ class AriaHapticAligner:
         # Read CSV file
         df = pd.read_csv(self.haptic_csv_path)
 
-        # Use relative_time column as timestamps (already in seconds from start)
-        if 'relative_time' in df.columns:
-            timestamps = df['relative_time'].values
+        print(f"DEBUG: CSV columns: {df.columns.tolist()}")
+
+        # ===== Time column detection =====
+        normalize_timestamps = False
+        time_source = None
+
+        # Priority 1: Relative_Time_ms (GEN3 format - use actual time)
+        if 'Relative_Time_ms' in df.columns:
+            timestamps = pd.to_numeric(df['Relative_Time_ms'], errors='coerce').values / 1000.0  # ms to seconds
+            time_source = "Relative_Time_ms"
+            print(f"Using {time_source} for timestamps")
+
+        # Priority 2: Sample_Index (GEN3 format - guaranteed continuous)
+        elif 'Sample_Index' in df.columns:
+            timestamps = pd.to_numeric(df['Sample_Index'], errors='coerce').values
+            # Convert sample index to time assuming 1000Hz sampling rate
+            timestamps = timestamps / 1000.0  # Convert to seconds
+            time_source = "Sample_Index (1000Hz)"
+            print(f"Using {time_source} for timestamps")
+
+        # Priority 3: relative_time (legacy format, in seconds)
+        elif 'relative_time' in df.columns:
+            timestamps = pd.to_numeric(df['relative_time'], errors='coerce').values
+            time_source = "relative_time"
+            print(f"Using {time_source} for timestamps")
+
+        # Priority 4: timestamp (legacy format)
         elif 'timestamp' in df.columns:
-            timestamps = df['timestamp'].values
+            timestamps = pd.to_numeric(df['timestamp'], errors='coerce').values
+            normalize_timestamps = True
+            time_source = "timestamp"
+            print(f"Using {time_source} for timestamps")
+
+        # Fallback: use first column
+        else:
+            timestamps = pd.to_numeric(df.iloc[:, 0], errors='coerce').values
+            normalize_timestamps = True
+            time_source = "first column"
+            print(f"WARNING: Using {time_source} for timestamps")
+
+        # ===== Force column detection =====
+        # Priority 1: Look for _Total columns (GEN3 format)
+        total_cols = [col for col in df.columns if '_Total' in col]
+
+        # Priority 2: Look for _magnitude columns (legacy format)
+        if not total_cols:
+            total_cols = [col for col in df.columns if '_magnitude' in col.lower()]
+
+        print(f"DEBUG: Found force columns: {total_cols}")
+
+        # Extract forces based on available columns
+        if len(total_cols) >= 2:
+            # Try to find ThumbTip and IndexTip for pinch force
+            thumb_col = next((col for col in total_cols if 'thumb' in col.lower()), None)
+            index_col = next((col for col in total_cols if 'index' in col.lower()), None)
+
+            if thumb_col and index_col:
+                force1 = pd.to_numeric(df[thumb_col], errors='coerce').values
+                force2 = pd.to_numeric(df[index_col], errors='coerce').values
+                forces = force1 + force2  # Combined pinch force
+                print(f"Using pinch force columns: {thumb_col} + {index_col}")
+            else:
+                # Use first two available force columns
+                force1 = pd.to_numeric(df[total_cols[0]], errors='coerce').values
+                force2 = pd.to_numeric(df[total_cols[1]], errors='coerce').values
+                forces = force1 + force2
+                print(f"Using force columns: {total_cols[0]} + {total_cols[1]}")
+
+        elif len(total_cols) == 1:
+            forces = pd.to_numeric(df[total_cols[0]], errors='coerce').values
+            print(f"Using single force column: {total_cols[0]}")
+
+        else:
+            # Fallback: look for any force-related columns (Fx, Fy, Fz)
+            fx_cols = [col for col in df.columns if col.endswith('_Fx')]
+            fy_cols = [col for col in df.columns if col.endswith('_Fy')]
+            fz_cols = [col for col in df.columns if col.endswith('_Fz')]
+
+            if fx_cols and fy_cols and fz_cols:
+                # Calculate magnitude from components
+                fx = pd.to_numeric(df[fx_cols[0]], errors='coerce').values
+                fy = pd.to_numeric(df[fy_cols[0]], errors='coerce').values
+                fz = pd.to_numeric(df[fz_cols[0]], errors='coerce').values
+                forces = np.sqrt(fx**2 + fy**2 + fz**2)
+                print(f"Calculated force magnitude from: {fx_cols[0]}, {fy_cols[0]}, {fz_cols[0]}")
+            else:
+                raise ValueError(f"Cannot find suitable force columns in CSV. Available columns: {df.columns.tolist()}")
+
+        # ===== Data validation and filtering =====
+        # Filter out invalid rows (NaN in timestamp or force)
+        valid_mask = ~(np.isnan(timestamps) | np.isnan(forces))
+
+        if not np.any(valid_mask):
+            raise ValueError("Could not parse timestamp or force columns as numeric values")
+
+        print(f"Valid data rows: {np.sum(valid_mask)} / {len(timestamps)}")
+
+        timestamps = timestamps[valid_mask]
+        forces = forces[valid_mask]
+
+        # ===== Timestamp normalization =====
+        if normalize_timestamps:
             # Convert to seconds if needed
             if timestamps[0] > 1e9:  # Likely nanoseconds
                 timestamps = timestamps / 1e9
+                print(f"Converted timestamps from nanoseconds to seconds")
             elif timestamps[0] > 1e6:  # Likely milliseconds
                 timestamps = timestamps / 1e3
-            timestamps = timestamps - timestamps[0]
-        else:
-            # Fallback: use first column
-            timestamps = df.iloc[:, 0].values
-            timestamps = timestamps - timestamps[0]
+                print(f"Converted timestamps from milliseconds to seconds")
 
-        # Extract force magnitudes from available columns
-        # Look for magnitude columns (e.g., "Ring Tip_magnitude", "Little Tip_magnitude")
-        magnitude_cols = [col for col in df.columns if 'magnitude' in col.lower()]
-
-        if len(magnitude_cols) >= 2:
-            # Use first two magnitude columns (assuming they represent two fingers)
-            force1 = df[magnitude_cols[0]].values
-            force2 = df[magnitude_cols[1]].values
-            forces = force1 + force2  # Combined force
-            print(f"Using force columns: {magnitude_cols[0]}, {magnitude_cols[1]}")
-        elif len(magnitude_cols) == 1:
-            forces = df[magnitude_cols[0]].values
-            print(f"Using single force column: {magnitude_cols[0]}")
-        else:
-            # Fallback: look for any force-related columns
-            force_cols = [col for col in df.columns if 'f' in col.lower() and '_' in col]
-            if len(force_cols) >= 2:
-                force1 = df[force_cols[0]].values
-                force2 = df[force_cols[1]].values
-                forces = force1 + force2
-                print(f"Using force columns: {force_cols[0]}, {force_cols[1]}")
-            else:
-                raise ValueError("Cannot find suitable force columns in CSV")
+        # Always normalize to start from 0
+        timestamps = timestamps - timestamps[0]
 
         self.haptic_timestamps = timestamps
         self.haptic_force = forces
@@ -587,8 +811,11 @@ class AriaHapticAligner:
         Returns:
             results: Dictionary with alignment results
         """
-        # Load data
-        self.load_aria_data()
+        # Load data - choose between VRS or MPS CSV
+        if self.mps_csv_path:
+            self.load_aria_data_from_mps_csv()
+        else:
+            self.load_aria_data()
         self.load_haptic_data()
 
         # Find optimal offset
