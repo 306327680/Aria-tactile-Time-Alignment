@@ -293,4 +293,4 @@ AriaHapticAligner(vrs_path: str, haptic_csv_path: str)
 
 ## 作者
 
-Generated with Claude Code
+Generated with Claude Code# Aria-tactile-Time-Alignment

@@ -197,8 +197,7 @@ def create_plotly_figure(aligner, segments=None):
             )
 
     # Plot 3: Correlation curve
-    offsets = np.arange(0, len(aligner.correlation_scores) * 0.01, 0.01)[:len(aligner.correlation_scores)]
-    offsets_list = offsets.tolist() if hasattr(offsets, 'tolist') else list(offsets)
+    offsets_list = aligner.search_offsets.tolist() if hasattr(aligner.search_offsets, 'tolist') else list(aligner.search_offsets)
     scores_list = aligner.correlation_scores.tolist() if hasattr(aligner.correlation_scores, 'tolist') else list(aligner.correlation_scores)
 
     print(f"DEBUG: Adding Plot 3 - offsets length: {len(offsets_list)}, scores length: {len(scores_list)}")
@@ -384,9 +383,6 @@ def align():
         haptic_norm = (aligner.haptic_force - aligner.haptic_force.min()) / \
                       (aligner.haptic_force.max() - aligner.haptic_force.min())
 
-        # Generate offsets array
-        offsets = np.arange(0, len(aligner.correlation_scores) * 0.01, 0.01)[:len(aligner.correlation_scores)]
-
         # Prepare results
         results = {
             'optimal_offset': float(aligner.optimal_offset),
@@ -404,7 +400,7 @@ def align():
             'aria_normalized': aria_inverted.tolist(),
             'haptic_timestamps': aligner.haptic_timestamps.tolist(),
             'haptic_normalized': haptic_norm.tolist(),
-            'offsets': offsets.tolist(),
+            'offsets': aligner.search_offsets.tolist(),
             'correlation_scores': aligner.correlation_scores.tolist(),
             'max_offset': max_offset,
             'segments': [{'time': float(t), 'index': int(idx)} for t, idx in segments] if segments else []

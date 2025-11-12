@@ -56,6 +56,7 @@ class AriaHapticAligner:
         # Alignment results
         self.optimal_offset = None
         self.correlation_scores = None
+        self.search_offsets = None  # Store the actual offset values used in search
 
     def load_aria_data(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -598,6 +599,7 @@ class AriaHapticAligner:
 
         scores = np.array(scores)
         self.correlation_scores = scores
+        self.search_offsets = offsets  # Store offsets for plotting
 
         # Find offset with maximum similarity
         best_idx = np.argmax(scores)
@@ -665,13 +667,12 @@ class AriaHapticAligner:
 
         # Plot 3: Correlation vs offset
         ax3 = axes[2]
-        offsets = np.arange(0, len(self.correlation_scores) * 0.01, 0.01)[:len(self.correlation_scores)]
-        ax3.plot(offsets, self.correlation_scores, 'g-', linewidth=2)
+        ax3.plot(self.search_offsets, self.correlation_scores, 'g-', linewidth=2)
         ax3.axvline(self.optimal_offset, color='r', linestyle='--',
                    label=f'Optimal offset: {self.optimal_offset:.3f}s')
         ax3.set_xlabel('Time Offset (s)')
-        ax3.set_ylabel('Correlation Coefficient')
-        ax3.set_title('Correlation vs Time Offset')
+        ax3.set_ylabel('Similarity Score')
+        ax3.set_title('Similarity Score vs Time Offset')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
 
