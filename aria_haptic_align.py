@@ -7,6 +7,7 @@ with haptic sensor data (thumb/index force) by finding the optimal time offset.
 
 Dependencies:
     - aria_api: Internal library for VRS/MPS data access and hand tracking
+                Installation: https://github.com/306327680/Aria-Vrs-Mps-api
     - numpy: For numerical computations
     - pandas: For CSV data handling
     - matplotlib: For visualization
@@ -27,6 +28,7 @@ except ImportError:
     ARIA_API_AVAILABLE = False
     print("Warning: aria_api not found. VRS file processing will not be available.")
     print("Please install aria_api to use full functionality.")
+    print("Installation: https://github.com/306327680/Aria-Vrs-Mps-api")
 
 
 class AriaHapticAligner:
@@ -69,8 +71,8 @@ class AriaHapticAligner:
         if not ARIA_API_AVAILABLE:
             raise ImportError(
                 "aria_api is not installed. This is required for VRS file processing.\n"
-                "Please install aria_api according to the internal documentation.\n"
-                "If you're using this for demonstration, please use pre-processed data."
+                "Installation: https://github.com/306327680/Aria-Vrs-Mps-api\n"
+                "Alternatively, you can use MPS CSV files with load_aria_data_from_mps_csv()."
             )
 
         # Use aria_api to load VRS and auto-discover MPS

@@ -19,9 +19,16 @@ cd /Volumes/BU100/Aria_data/aria_haptic_alignment
 pip install -r requirements.txt
 ```
 
-### 2. 安装 aria_api（内部库）
+### 2. 安装 aria_api（可选）
 
-请按照内部文档安装 `aria_api` 库。
+如需处理 VRS 文件，请安装 `aria_api` 库：
+
+```bash
+# 访问以下链接查看安装说明
+https://github.com/306327680/Aria-Vrs-Mps-api
+```
+
+> **注意**：aria_api 是可选的。如果只使用 MPS CSV 文件，则不需要安装。
 
 ## 🚀 启动应用
 

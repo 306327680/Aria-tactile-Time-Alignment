@@ -4,6 +4,12 @@ Aria-Haptic Alignment Web Application
 
 A Flask-based web interface for aligning Aria hand tracking data
 with haptic sensor data through an interactive browser interface.
+
+Dependencies:
+    - aria_api (optional): For VRS file processing
+                          Installation: https://github.com/306327680/Aria-Vrs-Mps-api
+    - Flask, Plotly: For web interface and visualization
+    - NumPy, Pandas, SciPy: For data processing
 """
 
 import os
@@ -614,8 +620,8 @@ if __name__ == '__main__':
         print("⚠️  aria_api: NOT AVAILABLE")
         print("   VRS file processing will not work.")
         print("   To enable full functionality:")
-        print("   1. Install aria_api according to internal documentation")
-        print("   2. Or contact the development team for access")
+        print("   Installation: https://github.com/306327680/Aria-Vrs-Mps-api")
+        print("   Alternatively, you can use MPS CSV files instead of VRS files")
 
     print("-" * 60)
     print(f"🌐 Server starting at: http://localhost:5001")

@@ -13,5 +13,6 @@ scipy>=1.10.0
 matplotlib>=3.7.0
 plotly>=5.17.0
 
-# Project Aria (internal library - install separately)
-# aria_api
+# Project Aria (optional - for VRS file processing)
+# aria_api - Install from: https://github.com/306327680/Aria-Vrs-Mps-api
+# Note: aria_api is optional. The web app works without it using MPS CSV files.

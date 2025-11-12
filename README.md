@@ -37,7 +37,11 @@ pip install -r requirements.txt
 - `Flask`：Web 应用框架
 - `aria_api`：Project Aria 内部库（可选，仅 VRS 文件处理需要）
 
-> **注意**：`aria_api` 是内部库，需要单独安装。如果没有此库，Web 应用仍可正常启动，但无法处理 VRS 文件。详见 [INSTALL.md](INSTALL.md)
+> **注意**：`aria_api` 是内部库，需要单独安装。如果没有此库，Web 应用仍可正常启动，但无法处理 VRS 文件。
+>
+> **安装 aria_api**：请访问 https://github.com/306327680/Aria-Vrs-Mps-api
+>
+> 详见 [INSTALL.md](INSTALL.md)
 
 ## 🚀 使用方法
 
@@ -265,6 +269,9 @@ timestamp,relative_time,Ring Tip_magnitude,Little Tip_magnitude,...
 
 **Q: aria_api 是否必需？**
 A: 不是。仅处理 VRS 文件时需要。使用 MPS CSV 文件或仅启动 Web 界面不需要。
+
+**Q: 如何安装 aria_api？**
+A: 请访问 https://github.com/306327680/Aria-Vrs-Mps-api 查看安装说明。
 
 **Q: 推荐使用哪种方式？**
 A: Web 界面适合交互式使用，命令行适合批量处理，Python API 适合集成到其他程序。

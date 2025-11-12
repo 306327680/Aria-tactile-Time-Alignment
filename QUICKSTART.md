@@ -63,9 +63,9 @@ Aria-Haptic Alignment Web Application
 
 ## 🔧 如果您需要完整功能
 
-安装 `aria_api`（内部库）：
-1. 查看内部文档
-2. 联系 Project Aria 开发团队
+安装 `aria_api`：
+1. 访问 https://github.com/306327680/Aria-Vrs-Mps-api
+2. 按照仓库中的说明安装
 3. 安装后重启 Web 应用
 
 ## 📸 界面预览

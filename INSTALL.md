@@ -37,12 +37,13 @@ python3 check_dependencies.py
 ## 我需要 aria_api 吗？
 
 **如果您有 VRS 文件并需要完整功能**：是的
-- 您需要按照内部文档安装 aria_api
-- 请联系 Project Aria 团队获取访问权限
+- 请访问 https://github.com/306327680/Aria-Vrs-Mps-api 安装 aria_api
+- 按照仓库中的说明进行安装
 
 **如果您只是测试或演示**：不需要
 - Web 应用仍然可以启动
 - 您可以查看界面和功能
+- 可以使用 MPS CSV 文件代替 VRS 文件
 - 上传 VRS 文件时会显示友好的错误消息
 
 ## 启动 Web 应用
@@ -122,7 +123,7 @@ VRS 文件处理功能不可用。如需完整功能，请安装 aria_api 库。
 A: 不一定。如果您只是查看界面或测试其他功能，可以不安装。但处理 VRS 文件需要 aria_api。
 
 ### Q: 如何安装 aria_api？
-A: 这是内部库，请查看内部文档或联系 Project Aria 开发团队。
+A: 请访问 https://github.com/306327680/Aria-Vrs-Mps-api 查看详细的安装说明和文档。
 
 ### Q: 其他依赖在哪里安装？
 A: 运行 `pip install -r requirements.txt`
