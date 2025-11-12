@@ -71,6 +71,8 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: 10px;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .nav-link {
@@ -125,32 +127,35 @@
     <div class="container">
         <header>
             <div class="nav-header">
-                <h1>📊 数据可视化工具</h1>
-                <a href="/" class="nav-link">
-                    <span>←</span>
-                    <span>返回对齐工具</span>
-                </a>
+                <h1><span>📊</span> <span data-i18n="visualize.title">数据可视化工具</span></h1>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
+                    <a href="/" class="nav-link">
+                        <span>←</span>
+                        <span data-i18n="visualize.nav.back">返回对齐工具</span>
+                    </a>
+                </div>
             </div>
-            <p class="subtitle">单独查看 MPS 手部追踪数据和触觉传感器数据</p>
+            <p class="subtitle" data-i18n="visualize.subtitle">单独查看 MPS 手部追踪数据和触觉传感器数据</p>
         </header>
 
         <div class="main-content">
             <!-- Tab Navigation -->
             <div class="tabs">
-                <button class="tab-button active" data-tab="mps">MPS 手部追踪数据</button>
-                <button class="tab-button" data-tab="haptic">触觉传感器数据</button>
+                <button class="tab-button active" data-tab="mps" data-i18n="visualize.tab.mps">MPS 手部追踪数据</button>
+                <button class="tab-button" data-tab="haptic" data-i18n="visualize.tab.haptic">触觉传感器数据</button>
             </div>
 
             <!-- MPS Tab -->
             <div class="tab-content active" id="tab-mps">
                 <section class="upload-section">
-                    <h2>📁 上传 MPS CSV 文件</h2>
+                    <h2><span>📁</span> <span data-i18n="visualize.mps.upload">上传 MPS CSV 文件</span></h2>
                     <form id="mpsForm" enctype="multipart/form-data">
                         <div class="file-input-group">
                             <div class="file-input-wrapper">
-                                <label for="mps_file">MPS CSV 文件：</label>
+                                <label for="mps_file" data-i18n="visualize.mps.label">MPS CSV 文件 (hand_tracking_results.csv):</label>
                                 <input type="file" id="mps_file" name="mps_file" accept=".csv" required>
-                                <span class="file-info" id="mps-file-info">未选择文件</span>
+                                <span class="file-info" id="mps-file-info" data-i18n="upload.file.none">未选择文件</span>
                             </div>
                         </div>
                     </form>
@@ -158,18 +163,18 @@
                     <div class="action-section">
                         <button id="visualizeMpsBtn" class="btn-primary" disabled>
                             <span class="btn-icon">📈</span>
-                            可视化 MPS 数据
+                            <span data-i18n="visualize.mps.button">加载并可视化</span>
                         </button>
                     </div>
                 </section>
 
                 <div id="mpsLoadingIndicator" class="loading-indicator" style="display: none;">
                     <div class="spinner"></div>
-                    <p>正在加载数据...</p>
+                    <p data-i18n="loading.load">加载数据中...</p>
                 </div>
 
                 <section id="mpsResultsSection" class="results-section" style="display: none;">
-                    <h2>📊 MPS 手部追踪数据</h2>
+                    <h2><span>📊</span> <span data-i18n="visualize.result.mps">MPS 数据可视化</span></h2>
                     <div class="stats-inline" id="mpsStats"></div>
                     <div class="plot-container">
                         <div id="mps-chart"></div>
@@ -177,7 +182,7 @@
                 </section>
 
                 <div id="mpsErrorSection" class="error-section" style="display: none;">
-                    <h3>❌ 错误信息</h3>
+                    <h3><span>❌</span> <span data-i18n="error.title">错误</span></h3>
                     <div id="mpsErrorMessage"></div>
                 </div>
             </div>
@@ -185,13 +190,13 @@
             <!-- Haptic Tab -->
             <div class="tab-content" id="tab-haptic">
                 <section class="upload-section">
-                    <h2>📁 上传触觉 CSV 文件</h2>
+                    <h2><span>📁</span> <span data-i18n="visualize.haptic.upload">上传触觉 CSV 文件</span></h2>
                     <form id="hapticForm" enctype="multipart/form-data">
                         <div class="file-input-group">
                             <div class="file-input-wrapper">
-                                <label for="haptic_file">触觉 CSV 文件：</label>
+                                <label for="haptic_file" data-i18n="visualize.haptic.label">触觉 CSV 文件:</label>
                                 <input type="file" id="haptic_file" name="haptic_file" accept=".csv" required>
-                                <span class="file-info" id="haptic-file-info">未选择文件</span>
+                                <span class="file-info" id="haptic-file-info" data-i18n="upload.file.none">未选择文件</span>
                             </div>
                         </div>
                     </form>
@@ -199,18 +204,18 @@
                     <div class="action-section">
                         <button id="visualizeHapticBtn" class="btn-primary" disabled>
                             <span class="btn-icon">📈</span>
-                            可视化触觉数据
+                            <span data-i18n="visualize.haptic.button">加载并可视化</span>
                         </button>
                     </div>
                 </section>
 
                 <div id="hapticLoadingIndicator" class="loading-indicator" style="display: none;">
                     <div class="spinner"></div>
-                    <p>正在加载数据...</p>
+                    <p data-i18n="loading.load">加载数据中...</p>
                 </div>
 
                 <section id="hapticResultsSection" class="results-section" style="display: none;">
-                    <h2>📊 触觉传感器数据</h2>
+                    <h2><span>📊</span> <span data-i18n="visualize.result.haptic">触觉数据可视化</span></h2>
                     <div class="stats-inline" id="hapticStats"></div>
                     <div class="plot-container">
                         <div id="haptic-chart"></div>
@@ -218,17 +223,19 @@
                 </section>
 
                 <div id="hapticErrorSection" class="error-section" style="display: none;">
-                    <h3>❌ 错误信息</h3>
+                    <h3><span>❌</span> <span data-i18n="error.title">错误</span></h3>
                     <div id="hapticErrorMessage"></div>
                 </div>
             </div>
         </div>
 
         <footer>
-            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly</p>
+            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly | <a href="https://github.com/306327680/Aria-tactile-Time-Alignment" target="_blank" data-i18n="footer.github">GitHub 仓库</a></p>
         </footer>
     </div>
 
+    <!-- Load i18n first, then visualize.js -->
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <script src="{{ url_for('static', filename='js/visualize.js') }}"></script>
 </body>
 </html>

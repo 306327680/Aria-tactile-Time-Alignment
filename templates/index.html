@@ -10,44 +10,47 @@
 <body>
     <div class="container">
         <header>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h1>🎯 Aria-Haptic Time Alignment Tool</h1>
-                <a href="/visualize" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
-                    <span>📊</span>
-                    <span>数据可视化</span>
-                </a>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
+                <h1 data-i18n="app.title">🎯 Aria-Haptic 时间对齐工具</h1>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
+                    <a href="/visualize" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
+                        <span>📊</span>
+                        <span data-i18n="nav.visualize">数据可视化</span>
+                    </a>
+                </div>
             </div>
-            <p class="subtitle">对齐 Project Aria 手部追踪数据与触觉传感器数据</p>
+            <p class="subtitle" data-i18n="app.subtitle">对齐 Project Aria 手部追踪数据与触觉传感器数据</p>
         </header>
 
         {% if not aria_api_available %}
         <div class="warning-banner">
-            <h3>⚠️ aria_api 未安装</h3>
-            <p>VRS 文件处理功能不可用。如需完整功能，请安装 aria_api 库。</p>
-            <p>安装方法：请参考内部文档或联系开发团队。</p>
+            <h3 data-i18n="warning.aria_api.title">⚠️ aria_api 未安装</h3>
+            <p data-i18n="warning.aria_api.desc">VRS 文件处理功能不可用。如需完整功能，请安装 aria_api 库。</p>
+            <p><span data-i18n="warning.aria_api.install">安装方法：</span> <a href="https://github.com/306327680/Aria-Vrs-Mps-api" target="_blank">https://github.com/306327680/Aria-Vrs-Mps-api</a></p>
         </div>
         {% endif %}
 
         <div class="main-content">
             <!-- File Upload Section -->
             <section class="upload-section">
-                <h2>📁 上传数据文件</h2>
+                <h2><span>📁</span> <span data-i18n="upload.title">上传数据文件</span></h2>
 
                 <!-- Mode Selector -->
                 <div class="mode-selector">
                     <label class="mode-option">
                         <input type="radio" name="upload_mode" value="mps_csv" id="mode-mps-csv" checked>
                         <span class="mode-label">
-                            <strong>MPS CSV 模式</strong>
-                            <small>上传 MPS 生成的 hand_tracking_results.csv（推荐，无需 aria_api）</small>
+                            <strong data-i18n="upload.mode.mps">MPS CSV 模式</strong>
+                            <small data-i18n="upload.mode.mps.desc">上传 MPS 生成的 hand_tracking_results.csv（推荐，无需 aria_api）</small>
                         </span>
                     </label>
                     <label class="mode-option">
                         <input type="radio" name="upload_mode" value="vrs" id="mode-vrs" {% if not aria_api_available %}disabled{% endif %}>
                         <span class="mode-label">
-                            <strong>VRS 模式</strong>
-                            <small>上传 VRS 文件（需要 aria_api，文件较大）</small>
-                            {% if not aria_api_available %}<span class="mode-disabled">（aria_api 未安装）</span>{% endif %}
+                            <strong data-i18n="upload.mode.vrs">VRS 模式</strong>
+                            <small data-i18n="upload.mode.vrs.desc">上传 VRS 文件（需要 aria_api，文件较大）</small>
+                            {% if not aria_api_available %}<span class="mode-disabled" data-i18n="upload.mode.vrs.disabled">（aria_api 未安装）</span>{% endif %}
                         </span>
                     </label>
                 </div>
@@ -56,23 +59,23 @@
                     <div class="file-input-group">
                         <!-- MPS CSV File Input -->
                         <div class="file-input-wrapper" id="mps-file-wrapper">
-                            <label for="mps_file">MPS CSV 文件：</label>
+                            <label for="mps_file" data-i18n="upload.file.mps">MPS CSV 文件：</label>
                             <input type="file" id="mps_file" name="mps_file" accept=".csv">
-                            <span class="file-info" id="mps-info">未选择文件</span>
+                            <span class="file-info" id="mps-info" data-i18n="upload.file.none">未选择文件</span>
                         </div>
 
                         <!-- VRS File Input -->
                         <div class="file-input-wrapper" id="vrs-file-wrapper" style="display: none;">
-                            <label for="vrs_file">VRS 文件：</label>
+                            <label for="vrs_file" data-i18n="upload.file.vrs">VRS 文件：</label>
                             <input type="file" id="vrs_file" name="vrs_file" accept=".vrs">
-                            <span class="file-info" id="vrs-info">未选择文件</span>
+                            <span class="file-info" id="vrs-info" data-i18n="upload.file.none">未选择文件</span>
                         </div>
 
                         <!-- Haptic CSV File Input -->
                         <div class="file-input-wrapper">
-                            <label for="haptic_file">触觉 CSV 文件：</label>
+                            <label for="haptic_file" data-i18n="upload.file.haptic">触觉 CSV 文件：</label>
                             <input type="file" id="haptic_file" name="haptic_file" accept=".csv" required>
-                            <span class="file-info" id="haptic-info">未选择文件</span>
+                            <span class="file-info" id="haptic-info" data-i18n="upload.file.none">未选择文件</span>
                         </div>
                     </div>
                 </form>
@@ -80,44 +83,44 @@
 
             <!-- Parameters Section -->
             <section class="parameters-section">
-                <h2>⚙️ 对齐参数</h2>
+                <h2><span>⚙️</span> <span data-i18n="params.title">对齐参数</span></h2>
                 <div class="parameters-grid">
                     <div class="param-group">
-                        <label for="max_offset">最大偏移范围 (秒)：</label>
+                        <label for="max_offset" data-i18n="params.max_offset">最大偏移范围 (秒)：</label>
                         <input type="number" id="max_offset" name="max_offset" value="5.0" min="0.1" max="30" step="0.1">
-                        <span class="param-help">搜索时间偏移的最大范围</span>
+                        <span class="param-help" data-i18n="params.max_offset.help">搜索时间偏移的最大范围</span>
                     </div>
 
                     <div class="param-group">
-                        <label for="method">对齐方法：</label>
+                        <label for="method" data-i18n="params.method">对齐方法：</label>
                         <select id="method" name="method">
-                            <option value="xcorr" selected>交叉相关 (推荐)</option>
-                            <option value="pearson">Pearson 相关</option>
-                            <option value="dtw">动态时间规整 (慢)</option>
-                            <option value="mi">互信息 (慢)</option>
-                            <option value="hybrid">混合方法 (慢)</option>
+                            <option value="xcorr" selected data-i18n="params.method.xcorr">交叉相关 (推荐)</option>
+                            <option value="pearson" data-i18n="params.method.pearson">Pearson 相关</option>
+                            <option value="dtw" data-i18n="params.method.dtw">动态时间规整 (慢)</option>
+                            <option value="mi" data-i18n="params.method.mi">互信息 (慢)</option>
+                            <option value="hybrid" data-i18n="params.method.hybrid">混合方法 (慢)</option>
                         </select>
-                        <span class="param-help">选择相似度计算方法</span>
+                        <span class="param-help" data-i18n="params.method.help">选择相似度计算方法</span>
                     </div>
 
                     <div class="param-group">
-                        <label for="force_threshold">力度阈值 (N)：</label>
+                        <label for="force_threshold" data-i18n="params.force_threshold">力度阈值 (N)：</label>
                         <input type="number" id="force_threshold" name="force_threshold" value="1.0" min="0" max="100" step="0.1">
-                        <span class="param-help">片段检测的最小力度值</span>
+                        <span class="param-help" data-i18n="params.force_threshold.help">片段检测的最小力度值</span>
                     </div>
 
                     <div class="param-group">
-                        <label for="smooth_window">平滑窗口大小：</label>
+                        <label for="smooth_window" data-i18n="params.smooth_window">平滑窗口大小：</label>
                         <input type="number" id="smooth_window" name="smooth_window" value="5" min="1" max="50" step="1">
-                        <span class="param-help">降噪平滑滤波器窗口</span>
+                        <span class="param-help" data-i18n="params.smooth_window.help">降噪平滑滤波器窗口</span>
                     </div>
 
                     <div class="param-group checkbox-group">
                         <label>
                             <input type="checkbox" id="export_segments" name="export_segments" checked>
-                            检测并导出力度片段
+                            <span data-i18n="params.export_segments">检测并导出片段</span>
                         </label>
-                        <span class="param-help">自动识别力度片段分割点</span>
+                        <span class="param-help" data-i18n="params.export_segments.help">自动识别力度片段并生成 CSV</span>
                     </div>
                 </div>
             </section>
@@ -126,54 +129,55 @@
             <div class="action-section">
                 <button id="alignBtn" class="btn-primary">
                     <span class="btn-icon">▶️</span>
-                    开始对齐分析
+                    <span data-i18n="action.align">开始对齐分析</span>
                 </button>
             </div>
 
             <!-- Loading Indicator -->
             <div id="loadingIndicator" class="loading-indicator" style="display: none;">
                 <div class="spinner"></div>
-                <p>正在处理数据，请稍候...</p>
+                <p><strong data-i18n="loading.title">正在处理...</strong></p>
+                <p data-i18n="loading.wait">这可能需要几秒到几分钟，取决于数据大小和对齐方法。</p>
             </div>
 
             <!-- Results Section -->
             <section id="resultsSection" class="results-section" style="display: none;">
-                <h2>📊 对齐结果</h2>
+                <h2><span>📊</span> <span data-i18n="results.title">对齐结果</span></h2>
 
                 <!-- Stats Cards -->
                 <div class="stats-grid">
                     <div class="stat-card">
-                        <div class="stat-label">最优时间偏移</div>
+                        <div class="stat-label" data-i18n="results.optimal_offset">最优时间偏移</div>
                         <div class="stat-value" id="optimal-offset">-</div>
-                        <div class="stat-unit">秒</div>
+                        <div class="stat-unit" data-i18n="results.unit.seconds">秒</div>
                     </div>
 
                     <div class="stat-card">
-                        <div class="stat-label">相似度得分</div>
+                        <div class="stat-label" data-i18n="results.similarity">相似度得分</div>
                         <div class="stat-value" id="similarity-score">-</div>
-                        <div class="stat-unit">0-1 范围</div>
+                        <div class="stat-unit">0-1</div>
                     </div>
 
                     <div class="stat-card">
-                        <div class="stat-label">Aria 样本数</div>
+                        <div class="stat-label" data-i18n="results.aria_samples">Aria 样本数</div>
                         <div class="stat-value" id="aria-samples">-</div>
-                        <div class="stat-unit">帧</div>
+                        <div class="stat-unit" data-i18n="results.unit.samples">个样本</div>
                     </div>
 
                     <div class="stat-card">
-                        <div class="stat-label">触觉样本数</div>
+                        <div class="stat-label" data-i18n="results.haptic_samples">触觉样本数</div>
                         <div class="stat-value" id="haptic-samples">-</div>
-                        <div class="stat-unit">点</div>
+                        <div class="stat-unit" data-i18n="results.unit.samples">个样本</div>
                     </div>
 
                     <div class="stat-card">
-                        <div class="stat-label">检测到的片段</div>
+                        <div class="stat-label" data-i18n="results.segments">检测到的片段</div>
                         <div class="stat-value" id="segment-count">-</div>
-                        <div class="stat-unit">个</div>
+                        <div class="stat-unit" data-i18n="results.unit.segments">个片段</div>
                     </div>
 
                     <div class="stat-card">
-                        <div class="stat-label">对齐方法</div>
+                        <div class="stat-label" data-i18n="results.method">对齐方法</div>
                         <div class="stat-value" id="method-used" style="font-size: 1.2rem;">-</div>
                         <div class="stat-unit">&nbsp;</div>
                     </div>
@@ -181,15 +185,16 @@
 
                 <!-- Interactive Offset Slider -->
                 <div class="offset-slider-section">
-                    <h3>🎚️ 交互式 Offset 调整</h3>
+                    <h3><span>🎚️</span> <span data-i18n="interactive.title">交互式偏移调整</span></h3>
+                    <p class="slider-help" data-i18n="interactive.help">拖动滑块实时查看不同时间偏移下的对齐效果</p>
                     <div class="slider-container">
                         <div class="slider-header">
                             <div class="slider-label">
-                                <span>时间偏移 (秒):</span>
-                                <span id="current-offset" class="offset-value">0.000</span>
+                                <span data-i18n="interactive.current_offset">当前偏移</span>:
+                                <span id="current-offset" class="offset-value">0.000</span>s
                             </div>
                             <div class="slider-info">
-                                <span>相似度得分:</span>
+                                <span data-i18n="interactive.current_similarity">当前相似度</span>:
                                 <span id="current-similarity" class="similarity-value">-</span>
                             </div>
                         </div>
@@ -205,13 +210,9 @@
                             <span id="max-offset-label">5s</span>
                         </div>
                         <div class="slider-buttons">
-                            <button id="apply-offset-btn" class="btn-apply">
-                                <span class="btn-icon">✓</span>
-                                应用更改
-                            </button>
                             <button id="reset-offset-btn" class="btn-reset">
                                 <span class="btn-icon">🔄</span>
-                                重置为最优值
+                                <span data-i18n="interactive.reset">重置到最优偏移</span>
                             </button>
                         </div>
                     </div>
@@ -226,23 +227,26 @@
                 <div id="downloadSection" class="download-section" style="display: none;">
                     <button id="downloadBtn" class="btn-secondary">
                         <span class="btn-icon">💾</span>
-                        下载片段 CSV 文件
+                        <span data-i18n="download.button">下载片段 CSV 文件</span>
                     </button>
                 </div>
             </section>
 
             <!-- Error Display -->
             <div id="errorSection" class="error-section" style="display: none;">
-                <h3>❌ 错误信息</h3>
+                <h3><span>❌</span> <span data-i18n="error.title">错误</span></h3>
+                <p data-i18n="error.generic">处理过程中出现错误</p>
                 <div id="errorMessage"></div>
             </div>
         </div>
 
         <footer>
-            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly</p>
+            <p>Aria-Haptic Alignment Tool | Powered by Flask & Plotly | <a href="https://github.com/306327680/Aria-tactile-Time-Alignment" target="_blank" data-i18n="footer.github">GitHub 仓库</a></p>
         </footer>
     </div>
 
+    <!-- Load i18n first, then main.js -->
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>
 </html>
