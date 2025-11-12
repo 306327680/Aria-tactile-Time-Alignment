@@ -1,296 +1,320 @@
-# Aria-Haptic Time Alignment Library
+# Aria-Tactile Time Alignment
 
-一个用于对齐 Project Aria 手部追踪数据与触觉传感器数据的时间同步库。
+一个用于对齐 Project Aria 手部追踪数据与触觉传感器数据的时间同步工具，提供命令行工具和交互式 Web 界面。
 
-## 功能概述
+## ✨ 功能特性
 
-本库实现了基于相关性分析的时间对齐算法，用于同步：
-- **Aria 数据**：右手拇指与食指之间的距离（基于 MPS 手部追踪的 21 个关键点）
+本项目提供了基于相关性分析的时间对齐算法，用于同步：
+- **Aria 数据**：右手拇指与食指之间的距离（基于 MPS 手部追踪）
 - **触觉数据**：手指力传感器的力度测量值
 
-核心假设：拇指与食指距离越小 → 捏合力越大
+**核心假设**：拇指与食指距离越小 → 捏合力越大
 
-## 依赖项
+### 🌟 主要功能
 
-- `aria_api`：Project Aria 内部库，用于 VRS/MPS 数据访问和手部追踪
-- `numpy`：数值计算
-- `pandas`：CSV 数据处理
-- `matplotlib`：可视化
-- `scipy`：信号处理和插值
+- 🎯 **多种对齐算法**：交叉相关、Pearson相关、DTW、互信息、混合方法
+- 🌐 **Web 交互界面**：拖拽上传、实时参数调整、交互式可视化
+- 📊 **智能片段检测**：自动识别力度变化片段
+- 📁 **多种数据格式**：支持 VRS、MPS CSV、触觉传感器 CSV
+- 💾 **结果导出**：生成对齐图表和片段分割 CSV
+- ⚡ **性能优化**：支持多种速度/精度权衡的算法
 
-## 安装
+## 📦 快速开始
+
+### 安装依赖
 
 ```bash
-pip install numpy pandas matplotlib scipy
+# 克隆或进入项目目录
+cd aria_haptic_alignment
+
+# 安装 Python 依赖
+pip install -r requirements.txt
 ```
 
-注意：`aria_api` 为内部库，需要单独安装。
+**依赖项说明：**
+- `numpy`、`pandas`、`scipy`：数据处理和信号分析
+- `matplotlib`、`plotly`：数据可视化
+- `Flask`：Web 应用框架
+- `aria_api`：Project Aria 内部库（可选，仅 VRS 文件处理需要）
 
-## 使用方法
+> **注意**：`aria_api` 是内部库，需要单独安装。如果没有此库，Web 应用仍可正常启动，但无法处理 VRS 文件。详见 [INSTALL.md](INSTALL.md)
 
-### 命令行使用（推荐）
+## 🚀 使用方法
+
+### 方式 1：Web 应用界面（推荐）
+
+启动交互式 Web 界面：
+
+```bash
+# 使用启动脚本（会自动检查依赖）
+./start_web_app.sh
+
+# 或直接运行
+python3 web_app.py
+```
+
+然后在浏览器中打开：**http://localhost:5001**
+
+**Web 界面功能：**
+- 📤 拖拽上传 VRS/MPS CSV 和触觉传感器 CSV 文件
+- ⚙️ 实时调整对齐参数（偏移范围、算法、阈值等）
+- 📊 交互式 Plotly 图表（缩放、平移、悬停查看数据）
+- 📈 数据可视化工具（单独查看 MPS 或触觉数据）
+- 💾 一键下载片段分割 CSV 文件
+- 📱 响应式设计，支持桌面和移动设备
+
+> 详细使用说明请参考 [WEB_README.md](WEB_README.md)
+
+### 方式 2：命令行工具
+
+适合批量处理和脚本自动化：
 
 ```bash
 # 基本用法 - 自动以VRS文件名命名输出图片
-python aria_haptic_alignment/aria_haptic_align.py <vrs_path> <haptic_csv>
+python3 aria_haptic_align.py <vrs_path> <haptic_csv>
 
 # 示例
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv
+python3 aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv
+
+# 使用 MPS CSV 文件（无需 VRS）
+python3 aria_haptic_align.py --mps-csv hand_tracking_results.csv --haptic-csv sensor.csv
 
 # 指定最大搜索偏移范围
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --max-offset 10.0
+python3 aria_haptic_align.py glue.vrs sensor.csv --max-offset 10.0
 
 # 使用不同的对齐方法
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --method hybrid
-
-# 指定输出目录
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --output-dir results/
-
-# 不显示图表
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --no-plot
+python3 aria_haptic_align.py glue.vrs sensor.csv --method hybrid
 
 # 调整力度阈值进行片段检测
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --force-threshold 2.0
+python3 aria_haptic_align.py glue.vrs sensor.csv --force-threshold 2.0
 
-# 禁用片段检测
-python aria_haptic_alignment/aria_haptic_align.py glue.vrs sensor_data/sequence_2_20250927_203243.csv --no-segments
+# 指定输出目录
+python3 aria_haptic_align.py glue.vrs sensor.csv --output-dir results/
 ```
 
 **命令行参数：**
-- `vrs_path`: VRS文件路径（必需）
+- `vrs_path`: VRS文件路径（与 `--mps-csv` 二选一）
 - `haptic_csv`: 触觉传感器CSV文件路径（必需）
+- `--mps-csv`: MPS CSV 文件路径（与 `vrs_path` 二选一）
 - `--max-offset`: 最大搜索偏移范围（秒），默认5.0
-- `--method`: 对齐方法，可选 pearson/xcorr/dtw/mi/hybrid，默认xcorr
+- `--method`: 对齐方法（pearson/xcorr/dtw/mi/hybrid），默认xcorr
+- `--force-threshold`: 片段检测的力度阈值（N），默认1.0
+- `--smooth-window`: 平滑窗口大小，默认5
+- `--output-dir`: 输出目录，默认为 VRS 文件所在目录的子目录
 - `--no-plot`: 禁用图表显示
 - `--no-segments`: 禁用片段检测和导出
-- `--force-threshold`: 片段检测的力度阈值（牛顿），默认1.0
-- `--output-dir`: 指定输出目录，默认为VRS文件所在目录的aria_haptic_alignment子目录
 
-**输出文件命名：**
-- 图片文件名格式：`{vrs_filename}_alignment.png`（包含片段标记的竖线）
-- CSV文件名格式：`{vrs_filename}_alignment_segments.csv`
-- 例如：`glue.vrs` → `glue_alignment.png` + `glue_alignment_segments.csv`
+**输出文件：**
+- `{vrs_filename}_alignment.png` - 对齐可视化图表
+- `{vrs_filename}_alignment_segments.csv` - 片段分割时间点
 
-### Python API使用
+### 方式 3：Python API
+
+在 Python 代码中集成对齐功能：
 
 ```python
 from aria_haptic_align import AriaHapticAligner
 
-# 初始化对齐器
+# 使用 VRS 文件
 aligner = AriaHapticAligner(
-    vrs_path="path/to/recording.vrs",
-    haptic_csv_path="path/to/haptic_data.csv"
+    vrs_path="recording.vrs",
+    haptic_csv_path="sensor_data.csv"
 )
 
-# 运行对齐分析
+# 或使用 MPS CSV 文件
+aligner = AriaHapticAligner(
+    mps_csv_path="hand_tracking_results.csv",
+    haptic_csv_path="sensor_data.csv"
+)
+
+# 运行完整对齐流程
 results = aligner.run(
-    max_offset=5.0,      # 最大搜索偏移范围（秒）
-    method='xcorr',      # 对齐方法（默认推荐）
-    plot=True,           # 生成可视化图表
-    save_path="results/alignment_result.png"
+    max_offset=5.0,
+    method='xcorr',
+    plot=True,
+    save_path="alignment.png",
+    export_segments=True,
+    force_threshold=1.0
 )
 
 # 查看结果
-print(f"最优时间偏移: {results['optimal_offset']:.3f} 秒")
-print(f"相似度得分: {results['max_similarity']:.4f}")
-print(f"对齐方法: {results['method']}")
+print(f"最优偏移: {results['optimal_offset']:.3f}s")
+print(f"相似度: {results['max_similarity']:.4f}")
+print(f"片段数: {len(results['segments'])}")
 ```
 
-### 分步使用
+**分步处理：**
 
 ```python
-# 1. 加载 Aria 手部追踪数据
-aria_timestamps, aria_distances = aligner.load_aria_data()
+# 1. 加载数据
+aligner.load_aria_data_from_mps_csv()  # 或 load_aria_data()
+aligner.load_haptic_data()
 
-# 2. 加载触觉传感器数据
-haptic_timestamps, haptic_forces = aligner.load_haptic_data()
+# 2. 寻找最优偏移
+offset = aligner.find_optimal_offset(max_offset=5.0, method='xcorr')
 
-# 3. 寻找最优时间偏移
-optimal_offset = aligner.find_optimal_offset(max_offset=5.0, method='xcorr', step=0.01)
+# 3. 检测片段
+segments = aligner.detect_force_segments(force_threshold=1.0)
 
-# 4. 绘制对齐前后对比图
-aligner.plot_alignment(save_path="alignment_result.png")
+# 4. 可视化
+aligner.plot_alignment(save_path="result.png", segments=segments)
+
+# 5. 导出 CSV
+aligner.export_segments_csv(segments, "segments.csv")
 ```
 
-### 比较不同方法
+## 📊 对齐方法对比
 
-```python
-# 测试多种对齐方法
-methods = ['xcorr', 'pearson', 'mi']
+| 方法 | 速度 | 准确度 | 适用场景 | 推荐度 |
+|------|------|--------|---------|-------|
+| **xcorr** | ⚡⚡⚡⚡ | ⭐⭐⭐⭐ | 信号形状相似 | ✅ 推荐 |
+| **pearson** | ⚡⚡⚡⚡⚡ | ⭐⭐⭐ | 快速测试 | - |
+| **dtw** | ⚡⚡ | ⭐⭐⭐⭐⭐ | 时间扭曲严重 | - |
+| **mi** | ⚡⚡ | ⭐⭐⭐⭐ | 非线性关系 | - |
+| **hybrid** | ⚡ | ⭐⭐⭐⭐⭐ | 需要最高质量 | - |
 
-for method in methods:
-    aligner = AriaHapticAligner(vrs_path, haptic_csv_path)
-    results = aligner.run(max_offset=5.0, method=method, plot=False)
-    print(f"{method}: offset={results['optimal_offset']:.3f}s, "
-          f"score={results['max_similarity']:.4f}")
+**推荐使用 `xcorr`**：在速度和准确性之间取得最佳平衡。
+
+## 🗂️ 项目结构
+
+```
+aria_haptic_alignment/
+├── aria_haptic_align.py      # 核心对齐算法库
+├── web_app.py                 # Flask Web 应用
+├── start_web_app.sh          # Web 应用启动脚本
+├── check_dependencies.py      # 依赖检查工具
+├── requirements.txt           # Python 依赖列表
+├── README.md                  # 本文档
+├── INSTALL.md                 # 安装指南
+├── QUICKSTART.md              # 快速开始指南
+├── WEB_README.md              # Web 应用详细文档
+├── templates/                 # HTML 模板
+│   ├── index.html            # 主页（对齐工具）
+│   └── visualize.html        # 数据可视化页面
+└── static/                    # 静态资源
+    ├── css/style.css         # 样式文件
+    └── js/main.js            # JavaScript 交互逻辑
 ```
 
-## 工作原理
+## 🔬 工作原理
 
-### 1. 数据加载
+### 数据处理流程
 
-**Aria 数据提取：**
-- 使用 `aria_api.AriaSession.from_vrs()` 自动发现并加载 MPS 产物
-- 从 21 个手部关键点中提取：
-  - 右手拇指尖（关键点 4）
-  - 右手食指尖（关键点 8）
-- 计算世界坐标系下的欧氏距离
-- 采样频率：10Hz（每 100ms）
+1. **数据加载**
+   - **Aria**：从 VRS 或 MPS CSV 提取右手拇指-食指距离（21个关键点中的第4和第8个）
+   - **触觉**：从 CSV 提取力度数据（支持多种格式）
 
-**触觉数据提取：**
-- 读取 CSV 文件（支持 `relative_time` 列作为时间戳）
-- 提取力度 magnitude 列（如 Ring Tip、Little Tip）
-- 时间戳自动归一化到从 0 开始
+2. **信号预处理**
+   - 归一化到 [0, 1] 区间
+   - 距离信号反转（小距离 → 高值，匹配高力度）
+   - 创建插值函数支持任意时间点采样
 
-### 2. 时间对齐算法
+3. **时间对齐**
+   - 在搜索范围内以步长滑动触觉信号
+   - 计算每个偏移量的相似度得分
+   - 选择最高得分对应的偏移量
 
-支持多种对齐方法，默认使用**交叉相关（Cross-Correlation）**：
+4. **片段检测**
+   - 基于力度阈值识别接触段
+   - 平滑滤波降噪
+   - 合并过于接近的片段
 
-**可选方法：**
-- **`pearson`**: Pearson 相关系数（简单快速，但对异常值敏感）
-- **`xcorr`**: 归一化交叉相关（推荐，对信号形状匹配更好）
-- **`dtw`**: 动态时间规整（处理时间扭曲，但计算慢）
-- **`mi`**: 互信息（捕捉非线性关系，计算慢）
-- **`hybrid`**: 多方法加权组合（综合性能最佳，但计算慢）
+5. **结果输出**
+   - 生成对齐前后对比图
+   - 导出片段分割时间点 CSV
 
-**算法步骤：**
-1. **信号归一化**：将距离和力度归一化到 [0, 1] 区间
-2. **距离反转**：将距离信号反转（小距离 → 大值），以匹配力度趋势
-3. **信号插值**：创建插值函数以支持任意时间点采样
-4. **相似度搜索**：
-   - 在 0-5 秒范围内，以 0.01 秒为步长搜索
-   - 对每个偏移量，计算选定方法的相似度得分
-5. **最优偏移**：选择相似度得分最大的偏移量
-
-### 3. 可视化输出
-
-生成三个子图：
-1. **对齐前**：原始信号时间序列对比
-2. **对齐后**：应用最优偏移后的信号对比
-3. **相关性曲线**：不同偏移量下的相关系数变化
-
-## 数据格式要求
+## 📋 数据格式要求
 
 ### VRS 文件
 - Project Aria 标准 VRS 格式
 - 需要配套的 MPS 产物目录（包含 `hand_tracking/` 子目录）
-- MPS 目录会被自动发现（命名规则：`mps_{vrs_basename}_vrs/`）
+- MPS 目录命名规则：`mps_{vrs_basename}_vrs/`
 
-### 触觉 CSV 文件
-期望的列格式：
-```
-timestamp, relative_time, [指尖名称]_magnitude, ...
-```
+### MPS CSV 文件
+支持直接使用 MPS 导出的 `hand_tracking_results.csv`：
 
-示例：
 ```csv
-timestamp,relative_time,Ring Tip_fx,Ring Tip_fy,Ring Tip_fz,Ring Tip_magnitude,Little Tip_magnitude
-1758975757.45,0.0,0,0,0,0.0,0.0
-1758975757.47,0.02,10.2,5.3,8.1,14.5,12.3
+tracking_timestamp_us,right_tracking_confidence,tx_right_landmark_4_device,ty_right_landmark_4_device,tz_right_landmark_4_device,tx_right_landmark_8_device,...
+1234567890,0.95,0.01,0.02,0.03,0.05,0.06,0.07,...
 ```
 
-## 示例
+- 需包含拇指尖（landmark 4）和食指尖（landmark 8）的 3D 坐标
+- 置信度 > 0.5 的帧会被使用
 
-见 `aria_haptic_align.py` 中的 `main()` 函数：
+### 触觉传感器 CSV 文件
 
-```bash
-python aria_haptic_align.py
+**GEN3 格式（推荐）：**
+```csv
+Timestamp,Sample_Index,Relative_Time_ms,ThumbTip_Fx,ThumbTip_Fy,ThumbTip_Fz,ThumbTip_Total,IndexTip_Total,...
 ```
 
-使用测试数据：
-- VRS: `/Volumes/BU100/Aria_data/glue.vrs`
-- CSV: `/Volumes/BU100/Aria_data/sensor_data/sequence_2_20250927_203243.csv`
-
-## 输出结果
-
-### 控制台输出
+**旧版格式：**
+```csv
+timestamp,relative_time,Ring Tip_magnitude,Little Tip_magnitude,...
 ```
-Hand tracking time range: 225399505000 to 413599504000 ns
+
+支持自动识别时间列（`Relative_Time_ms`、`Sample_Index`、`relative_time`、`timestamp`）和力度列（`_Total`、`_magnitude` 或分量 `_Fx/_Fy/_Fz`）。
+
+## 📚 文档
+
+- **[INSTALL.md](INSTALL.md)** - 详细安装指南和依赖说明
+- **[QUICKSTART.md](QUICKSTART.md)** - 5分钟快速上手
+- **[WEB_README.md](WEB_README.md)** - Web 应用完整使用手册
+
+## ⚠️ 常见问题
+
+**Q: aria_api 是否必需？**
+A: 不是。仅处理 VRS 文件时需要。使用 MPS CSV 文件或仅启动 Web 界面不需要。
+
+**Q: 推荐使用哪种方式？**
+A: Web 界面适合交互式使用，命令行适合批量处理，Python API 适合集成到其他程序。
+
+**Q: 相似度得分很低怎么办？**
+A: 尝试增大 `max_offset` 搜索范围，或使用 `hybrid` 方法。检查数据质量和时间同步。
+
+**Q: 如何解释时间偏移结果？**
+A: `optimal_offset = 1.5s` 表示触觉数据需要向后移动 1.5 秒才能与 Aria 数据对齐。
+
+**Q: Web 应用端口被占用？**
+A: 编辑 `web_app.py` 最后一行，将 `port=5001` 改为其他值。
+
+## 📊 示例输出
+
+**控制台输出：**
+```
 Loaded 1881 Aria hand tracking frames
 Time range: 0.00s to 188.00s
 Distance range: 0.0616m to 0.0831m
 
-Using force columns: Ring Tip_magnitude, Little Tip_magnitude
 Loaded 9385 haptic sensor samples
 Time range: 0.00s to 189.08s
-Force range: 0.0000 to 259.6247
-
-Using alignment method: xcorr
-Searching offsets in range [0, 5.0s] with step 0.01s...
 
 === Time Alignment Results ===
 Method: xcorr
 Optimal offset: 1.310 seconds
 Max similarity score: 0.1685
-Search range: 0 to 5.0s
 ```
 
-### 图像文件
-保存包含三个子图的 PNG 文件：
-- 对齐前的信号对比
-- 对齐后的信号对比
-- 相关系数 vs 时间偏移曲线
+**可视化图表：**
+- 图1：对齐前信号对比
+- 图2：对齐后信号对比（带片段标记）
+- 图3：相似度得分曲线
 
-## API 参考
-
-### `AriaHapticAligner`
-
-**构造函数：**
-```python
-AriaHapticAligner(vrs_path: str, haptic_csv_path: str)
+**CSV 输出：**
+```csv
+split_index,split_time_s,before_segment,after_segment
+0,5.234,0,1
+1,12.567,1,2
 ```
 
-**主要方法：**
+## 🤝 贡献
 
-- `load_aria_data() -> Tuple[np.ndarray, np.ndarray]`
-  - 返回：(时间戳数组, 距离数组)
+欢迎提交 Issue 和 Pull Request！
 
-- `load_haptic_data() -> Tuple[np.ndarray, np.ndarray]`
-  - 返回：(时间戳数组, 力度数组)
-
-- `find_optimal_offset(max_offset: float = 5.0, method: str = 'xcorr', step: float = 0.01) -> float`
-  - 参数：
-    - `max_offset`: 最大搜索范围（秒）
-    - `method`: 对齐方法（'pearson', 'xcorr', 'dtw', 'mi', 'hybrid'）
-    - `step`: 搜索步长（秒）
-  - 返回：最优时间偏移（秒）
-
-- `plot_alignment(save_path: Optional[str] = None)`
-  - 生成并保存对齐可视化图
-
-- `run(max_offset: float = 5.0, method: str = 'xcorr', plot: bool = True, save_path: Optional[str] = None) -> Dict`
-  - 参数：
-    - `max_offset`: 最大搜索范围（秒）
-    - `method`: 对齐方法（默认 'xcorr'）
-    - `plot`: 是否生成可视化图
-    - `save_path`: 图像保存路径
-  - 返回：包含对齐结果的字典
-    - `optimal_offset`: 最优时间偏移（秒）
-    - `max_similarity`: 最大相似度得分
-    - `method`: 使用的对齐方法
-    - `aria_time_range`: Aria 数据时间范围
-    - `haptic_time_range`: 触觉数据时间范围
-
-## 注意事项
-
-1. **时间偏移含义**：返回的 `optimal_offset` 表示触觉数据需要向后偏移的秒数
-2. **采样率差异**：Aria 数据以 10Hz 采样，触觉数据通常更高（~50Hz），算法会自动插值对齐
-3. **方法选择**：
-   - **快速测试**：使用 `pearson` 或 `xcorr`（推荐）
-   - **高精度**：使用 `hybrid` 或 `mi`（计算时间较长）
-   - **处理时序扭曲**：使用 `dtw`（适合信号有局部时间拉伸的情况）
-4. **数据质量**：相似度得分较低（<0.3）可能表示：
-   - 数据不同步范围超出搜索范围
-   - 手部动作与触觉信号不匹配
-   - 数据质量问题（如遮挡、传感器故障）
-5. **性能优化**：
-   - DTW 和 MI 方法对长序列计算较慢，已进行降采样优化
-   - 推荐首选 `xcorr` 方法，在速度和准确性之间取得良好平衡
-
-## 许可证
+## 📄 许可
 
 内部使用
 
-## 作者
+---
 
-Generated with Claude Code# Aria-tactile-Time-Alignment
+**Generated with Claude Code**
