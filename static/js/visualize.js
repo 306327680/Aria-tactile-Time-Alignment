@@ -202,10 +202,16 @@ function displayMpsResults(data) {
     }, 100);
 }
 
+// Global variable to store haptic data for interactive updates
+let currentHapticData = null;
+
 // Display Haptic results
 function displayHapticResults(data) {
     console.log('Haptic Data received:', data);
     console.log('Plotly JSON:', data.plotly_json);
+
+    // Store data globally for interactive updates
+    currentHapticData = data;
 
     // Update stats
     const statsHtml = `
@@ -223,6 +229,13 @@ function displayHapticResults(data) {
         </div>
     `;
     document.getElementById('hapticStats').innerHTML = statsHtml;
+
+    // Setup sensor and axis controls if multi-sensor data is available
+    if (data.sensor_data && data.available_sensors && data.available_sensors.length > 0) {
+        setupHapticControls(data);
+    } else {
+        document.getElementById('hapticControls').style.display = 'none';
+    }
 
     // Render Plotly chart
     console.log('Rendering Haptic chart...');
@@ -252,6 +265,120 @@ function displayHapticResults(data) {
     setTimeout(() => {
         hapticResultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
+}
+
+// Setup haptic sensor and axis controls
+function setupHapticControls(data) {
+    const controlsDiv = document.getElementById('hapticControls');
+    const sensorCheckboxesDiv = document.getElementById('sensorCheckboxes');
+
+    // Clear existing sensor checkboxes
+    sensorCheckboxesDiv.innerHTML = '';
+
+    // Create sensor checkboxes
+    data.available_sensors.forEach((sensor, index) => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display: flex; align-items: center; gap: 5px; cursor: pointer;';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = sensor;
+        checkbox.className = 'sensor-checkbox';
+        checkbox.checked = true;  // All sensors checked by default
+        checkbox.style.cursor = 'pointer';
+
+        const span = document.createElement('span');
+        span.textContent = sensor;
+        span.style.fontWeight = '600';
+
+        label.appendChild(checkbox);
+        label.appendChild(span);
+        sensorCheckboxesDiv.appendChild(label);
+
+        // Add event listener
+        checkbox.addEventListener('change', updateHapticChart);
+    });
+
+    // Add event listeners to axis checkboxes
+    document.querySelectorAll('.axis-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', updateHapticChart);
+    });
+
+    // Show controls
+    controlsDiv.style.display = 'block';
+}
+
+// Update haptic chart based on selected sensors and axes
+function updateHapticChart() {
+    if (!currentHapticData) return;
+
+    // Get selected sensors
+    const selectedSensors = Array.from(document.querySelectorAll('.sensor-checkbox:checked'))
+        .map(cb => cb.value);
+
+    // Get selected axes
+    const selectedAxes = Array.from(document.querySelectorAll('.axis-checkbox:checked'))
+        .map(cb => cb.value);
+
+    console.log('Selected sensors:', selectedSensors);
+    console.log('Selected axes:', selectedAxes);
+
+    if (selectedSensors.length === 0 || selectedAxes.length === 0) {
+        console.log('No sensors or axes selected');
+        return;
+    }
+
+    // Define colors for different axes
+    const axisColors = {
+        'Fx': '#ff6b6b',  // Red
+        'Fy': '#51cf66',  // Green
+        'Fz': '#339af0',  // Blue
+        'Total': '#f59e0b'  // Orange
+    };
+
+    // Create new traces
+    const traces = [];
+    selectedSensors.forEach(sensor => {
+        selectedAxes.forEach(axis => {
+            if (currentHapticData.sensor_data[sensor] &&
+                currentHapticData.sensor_data[sensor][axis]) {
+                traces.push({
+                    x: currentHapticData.timestamps,
+                    y: currentHapticData.sensor_data[sensor][axis],
+                    mode: 'lines',
+                    name: `${sensor} - ${axis}`,
+                    line: {
+                        color: axisColors[axis],
+                        width: 2
+                    }
+                });
+            }
+        });
+    });
+
+    console.log(`Creating ${traces.length} traces`);
+
+    // Update the plot
+    const layout = {
+        title: 'Haptic Sensor Data - Multi-Axis View',
+        xaxis: { title: 'Time (seconds)' },
+        yaxis: { title: 'Force (N)' },
+        template: 'plotly_white',
+        hovermode: 'x unified',
+        height: 600,
+        autosize: true
+    };
+
+    Plotly.react('haptic-chart', traces, layout, {
+        responsive: true,
+        displayModeBar: true,
+        modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+        displaylogo: false
+    }).then(() => {
+        console.log('Chart updated successfully');
+    }).catch(err => {
+        console.error('Error updating chart:', err);
+    });
 }
 
 // Display MPS error

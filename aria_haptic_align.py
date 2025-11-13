@@ -415,6 +415,44 @@ class AriaHapticAligner:
         self.haptic_timestamps = timestamps
         self.haptic_force = forces
 
+        # ===== Store multi-axis and multi-finger data =====
+        # Store all available sensor data for advanced visualization
+        self.haptic_sensors = {}  # Dictionary to store data per sensor
+
+        # List of possible sensors
+        sensor_names = ['ThumbTip', 'IndexTip', 'MiddleTip', 'RingTip', 'PinkyTip']
+
+        for sensor in sensor_names:
+            fx_col = f"{sensor}_Fx"
+            fy_col = f"{sensor}_Fy"
+            fz_col = f"{sensor}_Fz"
+            total_col = f"{sensor}_Total"
+
+            # Check if this sensor has data
+            if fx_col in df.columns and fy_col in df.columns and fz_col in df.columns:
+                fx = pd.to_numeric(df[fx_col], errors='coerce').values[valid_mask]
+                fy = pd.to_numeric(df[fy_col], errors='coerce').values[valid_mask]
+                fz = pd.to_numeric(df[fz_col], errors='coerce').values[valid_mask]
+
+                # Calculate total if not provided
+                if total_col in df.columns:
+                    total = pd.to_numeric(df[total_col], errors='coerce').values[valid_mask]
+                else:
+                    total = np.sqrt(fx**2 + fy**2 + fz**2)
+
+                self.haptic_sensors[sensor] = {
+                    'Fx': fx,
+                    'Fy': fy,
+                    'Fz': fz,
+                    'Total': total
+                }
+                print(f"Stored {sensor} sensor data (Fx, Fy, Fz, Total)")
+
+        if self.haptic_sensors:
+            print(f"Available sensors: {list(self.haptic_sensors.keys())}")
+        else:
+            print("Warning: No multi-axis sensor data found")
+
         print(f"Loaded {len(timestamps)} haptic sensor samples")
         print(f"Time range: {timestamps[0]:.2f}s to {timestamps[-1]:.2f}s")
         print(f"Force range: {forces.min():.4f} to {forces.max():.4f}")

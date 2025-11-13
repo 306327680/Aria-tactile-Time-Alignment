@@ -550,18 +550,57 @@ def visualize_data():
             print(f"Time range: {aligner.haptic_timestamps[0]} to {aligner.haptic_timestamps[-1]}")
             print(f"Force range: {aligner.haptic_force.min()} to {aligner.haptic_force.max()}")
 
-            # Create plot
+            # Prepare sensor data for frontend
+            sensor_data = {}
+            available_sensors = []
+
+            if hasattr(aligner, 'haptic_sensors') and aligner.haptic_sensors:
+                for sensor_name, axes_data in aligner.haptic_sensors.items():
+                    available_sensors.append(sensor_name)
+                    sensor_data[sensor_name] = {
+                        'Fx': axes_data['Fx'].tolist(),
+                        'Fy': axes_data['Fy'].tolist(),
+                        'Fz': axes_data['Fz'].tolist(),
+                        'Total': axes_data['Total'].tolist()
+                    }
+                print(f"Available sensors: {available_sensors}")
+            else:
+                print("No multi-axis sensor data available")
+
+            # Create initial plot with default sensors (all available)
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=aligner.haptic_timestamps.tolist(),
-                y=aligner.haptic_force.tolist(),
-                mode='lines',
-                name='Force Magnitude',
-                line=dict(color='#f56565', width=2)
-            ))
+
+            # Define colors for different axes
+            axis_colors = {
+                'Fx': '#ff6b6b',  # Red
+                'Fy': '#51cf66',  # Green
+                'Fz': '#339af0',  # Blue
+                'Total': '#f59e0b'  # Orange
+            }
+
+            # If multi-sensor data is available, plot all sensors' Total force by default
+            if sensor_data:
+                for sensor_name in available_sensors:
+                    fig.add_trace(go.Scatter(
+                        x=aligner.haptic_timestamps.tolist(),
+                        y=sensor_data[sensor_name]['Total'],
+                        mode='lines',
+                        name=f'{sensor_name} - Total',
+                        line=dict(width=2),
+                        visible=True
+                    ))
+            else:
+                # Fallback to legacy single force trace
+                fig.add_trace(go.Scatter(
+                    x=aligner.haptic_timestamps.tolist(),
+                    y=aligner.haptic_force.tolist(),
+                    mode='lines',
+                    name='Force Magnitude',
+                    line=dict(color='#f56565', width=2)
+                ))
 
             fig.update_layout(
-                title='Haptic Sensor Data - Force Magnitude',
+                title='Haptic Sensor Data - Multi-Axis View',
                 xaxis_title='Time (seconds)',
                 yaxis_title='Force (N)',
                 template='plotly_white',
@@ -576,7 +615,10 @@ def visualize_data():
                 'plotly_json': json.loads(fig.to_json()),
                 'sample_count': len(aligner.haptic_timestamps),
                 'time_range': [float(aligner.haptic_timestamps[0]), float(aligner.haptic_timestamps[-1])],
-                'force_range': [float(aligner.haptic_force.min()), float(aligner.haptic_force.max())]
+                'force_range': [float(aligner.haptic_force.min()), float(aligner.haptic_force.max())],
+                'sensor_data': sensor_data,
+                'available_sensors': available_sensors,
+                'timestamps': aligner.haptic_timestamps.tolist()
             })
 
         else:

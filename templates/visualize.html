@@ -217,6 +217,41 @@
                 <section id="hapticResultsSection" class="results-section" style="display: none;">
                     <h2><span>📊</span> <span data-i18n="visualize.result.haptic">触觉数据可视化</span></h2>
                     <div class="stats-inline" id="hapticStats"></div>
+
+                    <!-- Sensor and Axis Selection Controls -->
+                    <div id="hapticControls" style="display: none; margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: 600; margin-bottom: 8px; color: #495057;">
+                                <span data-i18n="visualize.haptic.select_sensors">选择传感器:</span>
+                            </label>
+                            <div id="sensorCheckboxes" style="display: flex; flex-wrap: wrap; gap: 15px;"></div>
+                        </div>
+
+                        <div style="margin-bottom: 15px;">
+                            <label style="display: block; font-weight: 600; margin-bottom: 8px; color: #495057;">
+                                <span data-i18n="visualize.haptic.select_axes">选择数据轴:</span>
+                            </label>
+                            <div id="axisCheckboxes" style="display: flex; flex-wrap: wrap; gap: 15px;">
+                                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                    <input type="checkbox" value="Fx" class="axis-checkbox" style="cursor: pointer;">
+                                    <span style="color: #ff6b6b; font-weight: 600;">Fx (X轴力)</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                    <input type="checkbox" value="Fy" class="axis-checkbox" style="cursor: pointer;">
+                                    <span style="color: #51cf66; font-weight: 600;">Fy (Y轴力)</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                    <input type="checkbox" value="Fz" class="axis-checkbox" style="cursor: pointer;">
+                                    <span style="color: #339af0; font-weight: 600;">Fz (Z轴力)</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                    <input type="checkbox" value="Total" class="axis-checkbox" checked style="cursor: pointer;">
+                                    <span style="color: #f59e0b; font-weight: 600;">Total (总力)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="plot-container">
                         <div id="haptic-chart"></div>
                     </div>
