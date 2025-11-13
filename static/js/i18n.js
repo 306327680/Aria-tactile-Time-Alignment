@@ -73,6 +73,7 @@ const translations = {
         'interactive.title': '交互式偏移调整',
         'interactive.current_offset': '当前偏移',
         'interactive.current_similarity': '当前相似度',
+        'interactive.apply': '应用偏移',
         'interactive.reset': '重置到最优偏移',
         'interactive.help': '拖动滑块实时查看不同时间偏移下的对齐效果',
 
@@ -196,6 +197,7 @@ const translations = {
         'interactive.title': 'Interactive Offset Adjustment',
         'interactive.current_offset': 'Current Offset',
         'interactive.current_similarity': 'Current Similarity',
+        'interactive.apply': 'Apply Offset',
         'interactive.reset': 'Reset to Optimal Offset',
         'interactive.help': 'Drag the slider to view alignment with different time offsets in real-time',
 

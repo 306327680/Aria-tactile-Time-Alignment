@@ -25,6 +25,7 @@ const downloadBtn = document.getElementById('downloadBtn');
 const offsetSlider = document.getElementById('offset-slider');
 const currentOffsetSpan = document.getElementById('current-offset');
 const currentSimilaritySpan = document.getElementById('current-similarity');
+const applyOffsetBtn = document.getElementById('apply-offset-btn');
 const resetOffsetBtn = document.getElementById('reset-offset-btn');
 const maxOffsetLabel = document.getElementById('max-offset-label');
 
@@ -377,7 +378,6 @@ offsetSlider.addEventListener('input', function(e) {
 });
 
 // Apply offset button handler - actually update the plot
-const applyOffsetBtn = document.getElementById('apply-offset-btn');
 applyOffsetBtn.addEventListener('click', function() {
     const newOffset = parseFloat(offsetSlider.value);
     updatePlotWithOffset(newOffset);
