@@ -989,18 +989,36 @@ def gripper_data():
                 print(f"Warning: Failed to load hand landmarks from MPS file: {e}")
                 hand_landmarks_data = None
 
+        # Auto-load IK chain if URDF is provided
+        ik_loaded = False
+        if urdf_path and IKPY_AVAILABLE:
+            try:
+                load_ik_chain(urdf_path, 'base_link', 'gripper_frame_link')
+                ik_loaded = True
+                print(f"IK chain auto-loaded from URDF: {urdf_path}")
+            except Exception as e:
+                print(f"Warning: Failed to auto-load IK chain: {e}")
+
         # Return data
         result = {
             'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
             'stl_files': stl_filenames,
             'stl_urls': stl_urls,
-            'stl_file_map': stl_file_map
+            'stl_file_map': stl_file_map,
+            'ik_available': IKPY_AVAILABLE,
+            'ik_loaded': ik_loaded
         }
-        
+
         # Add URDF data if available
         if urdf_data:
             result['urdf'] = urdf_data
             result['urdf_filename'] = os.path.basename(urdf_path) if urdf_path else None
+            result['urdf_path'] = urdf_path  # For IK service
+
+        # Add IK joint info if loaded
+        if ik_loaded:
+            result['ik_joint_names'] = ik_joint_names
+            result['ik_active_indices'] = ik_active_indices
 
         return jsonify(result)
 
@@ -1026,10 +1044,288 @@ def uploaded_stl(filename):
         return jsonify({'error': str(e)}), 500
 
 
+# ==================== IK Service ====================
+# Global IK chain object
+ik_chain = None
+ik_joint_names = []
+ik_active_indices = []
+
+# Check for ikpy
+IKPY_AVAILABLE = False
+try:
+    import ikpy
+    from ikpy.chain import Chain
+    IKPY_AVAILABLE = True
+except ImportError:
+    print("Warning: ikpy not installed. IK service will not be available.")
+    print("Install with: pip install ikpy")
+
+
+def load_ik_chain(urdf_path: str, base_link: str = "base_link", end_link: str = "gripper_frame_link"):
+    """Load URDF and create ikpy chain for IK calculations."""
+    global ik_chain, ik_joint_names, ik_active_indices
+
+    if not IKPY_AVAILABLE:
+        raise RuntimeError("ikpy not installed")
+
+    if not os.path.exists(urdf_path):
+        raise FileNotFoundError(f"URDF file not found: {urdf_path}")
+
+    import warnings
+
+    # First, create chain to determine link types
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        temp_chain = Chain.from_urdf_file(
+            urdf_path,
+            base_elements=[base_link],
+            name="so101_temp"
+        )
+
+    # Build active_links_mask: True only for non-fixed joints
+    active_links_mask = []
+    for link in temp_chain.links:
+        is_active = hasattr(link, 'joint_type') and link.joint_type != 'fixed'
+        active_links_mask.append(is_active)
+
+    # Create final chain with correct active_links_mask
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ik_chain = Chain.from_urdf_file(
+            urdf_path,
+            base_elements=[base_link],
+            active_links_mask=active_links_mask,
+            name="so101"
+        )
+
+    # Extract joint names and identify active joints
+    ik_joint_names = []
+    ik_active_indices = []
+
+    for i, link in enumerate(ik_chain.links):
+        if hasattr(link, 'name') and link.name:
+            if hasattr(link, 'joint_type') and link.joint_type != 'fixed':
+                ik_joint_names.append(link.name)
+                ik_active_indices.append(i)
+
+    print(f"IK: Loaded URDF with {len(ik_joint_names)} active joints: {ik_joint_names}")
+    return ik_chain
+
+
+@app.route('/ik', methods=['POST', 'OPTIONS'])
+def compute_ik():
+    """
+    Compute inverse kinematics for target position.
+
+    Request JSON:
+        {
+            "position": [x, y, z],             # Required: target position in meters
+            "orientation": [roll, pitch, yaw], # Optional: target orientation in radians
+            "initial_angles": [...]            # Optional: initial guess
+        }
+
+    Response JSON:
+        {
+            "success": true/false,
+            "joint_angles": [...],
+            "joint_names": [...],
+            "end_position": [x, y, z],
+            "position_error": float
+        }
+    """
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if not IKPY_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'error': 'ikpy not installed. Install with: pip install ikpy'
+        }), 500
+
+    if ik_chain is None:
+        return jsonify({
+            'success': False,
+            'error': 'IK chain not loaded. Call /ik/load_urdf first.'
+        }), 500
+
+    try:
+        data = request.get_json()
+
+        if not data or 'position' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: position'
+            }), 400
+
+        target_position = np.array(data['position'], dtype=float)
+        if len(target_position) != 3:
+            return jsonify({
+                'success': False,
+                'error': 'Position must be [x, y, z]'
+            }), 400
+
+        # Parse optional orientation
+        target_orientation = None
+        if 'orientation' in data:
+            orient = data['orientation']
+            if len(orient) == 3:
+                from scipy.spatial.transform import Rotation
+                target_orientation = Rotation.from_euler('xyz', orient).as_matrix()
+
+        # Parse initial angles
+        initial_angles = None
+        if 'initial_angles' in data:
+            active_angles = np.array(data['initial_angles'], dtype=float)
+            initial_angles = np.zeros(len(ik_chain.links))
+            for idx, angle in zip(ik_active_indices, active_angles):
+                initial_angles[idx] = angle
+
+        # Compute IK
+        if target_orientation is not None:
+            target_frame = np.eye(4)
+            target_frame[:3, :3] = target_orientation
+            target_frame[:3, 3] = target_position
+            result_angles = ik_chain.inverse_kinematics(
+                target_frame,
+                initial_position=initial_angles,
+                orientation_mode="all"
+            )
+        else:
+            result_angles = ik_chain.inverse_kinematics(
+                target_position,
+                initial_position=initial_angles,
+                orientation_mode=None
+            )
+
+        # Compute achieved position
+        fk_result = ik_chain.forward_kinematics(result_angles)
+        achieved_position = fk_result[:3, 3].tolist()
+
+        # Extract active joint angles
+        active_angles = [float(result_angles[i]) for i in ik_active_indices]
+        position_error = np.linalg.norm(target_position - np.array(achieved_position))
+
+        return jsonify({
+            'success': True,
+            'joint_angles': active_angles,
+            'joint_names': ik_joint_names,
+            'full_angles': result_angles.tolist(),
+            'end_position': achieved_position,
+            'position_error': float(position_error)
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/fk', methods=['POST', 'OPTIONS'])
+def compute_fk():
+    """Compute forward kinematics from joint angles."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if not IKPY_AVAILABLE or ik_chain is None:
+        return jsonify({'success': False, 'error': 'IK chain not available'}), 500
+
+    try:
+        data = request.get_json()
+        if not data or 'joint_angles' not in data:
+            return jsonify({'success': False, 'error': 'Missing joint_angles'}), 400
+
+        active_angles = np.array(data['joint_angles'], dtype=float)
+        full_angles = np.zeros(len(ik_chain.links))
+        for idx, angle in zip(ik_active_indices, active_angles):
+            full_angles[idx] = angle
+
+        fk_result = ik_chain.forward_kinematics(full_angles)
+
+        return jsonify({
+            'success': True,
+            'position': fk_result[:3, 3].tolist(),
+            'orientation_matrix': fk_result[:3, :3].tolist(),
+            'transform_matrix': fk_result.tolist()
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/ik/info', methods=['GET'])
+def ik_info():
+    """Get IK chain information."""
+    if not IKPY_AVAILABLE:
+        return jsonify({'success': False, 'error': 'ikpy not installed'}), 500
+
+    if ik_chain is None:
+        return jsonify({
+            'success': False,
+            'error': 'IK chain not loaded',
+            'ikpy_available': True
+        })
+
+    links_info = []
+    for link in ik_chain.links:
+        link_info = {
+            'name': link.name if hasattr(link, 'name') else 'unknown',
+            'joint_type': getattr(link, 'joint_type', 'unknown'),
+        }
+        if hasattr(link, 'bounds') and link.bounds is not None:
+            link_info['bounds'] = [
+                float(link.bounds[0]) if link.bounds[0] is not None else None,
+                float(link.bounds[1]) if link.bounds[1] is not None else None
+            ]
+        links_info.append(link_info)
+
+    return jsonify({
+        'success': True,
+        'joint_names': ik_joint_names,
+        'active_joint_indices': ik_active_indices,
+        'chain_length': len(ik_chain.links),
+        'num_active_joints': len(ik_joint_names),
+        'links': links_info
+    })
+
+
+@app.route('/ik/load_urdf', methods=['POST'])
+def ik_load_urdf():
+    """Load URDF for IK calculations."""
+    if not IKPY_AVAILABLE:
+        return jsonify({'success': False, 'error': 'ikpy not installed'}), 500
+
+    try:
+        data = request.get_json()
+        if not data or 'urdf_path' not in data:
+            return jsonify({'success': False, 'error': 'Missing urdf_path'}), 400
+
+        urdf_path = data['urdf_path']
+        base_link = data.get('base_link', 'base_link')
+        end_link = data.get('end_link', 'gripper_frame_link')
+
+        load_ik_chain(urdf_path, base_link, end_link)
+
+        return jsonify({
+            'success': True,
+            'message': f'Loaded URDF with {len(ik_joint_names)} active joints',
+            'joint_names': ik_joint_names
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/health')
 def health():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy'})
+    return jsonify({
+        'status': 'healthy',
+        'ik_available': IKPY_AVAILABLE,
+        'ik_chain_loaded': ik_chain is not None
+    })
 
 
 if __name__ == '__main__':

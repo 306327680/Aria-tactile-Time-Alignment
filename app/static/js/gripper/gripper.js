@@ -34,6 +34,7 @@ const FINGER_COLORS = {
 let gripperScene, gripperCamera, gripperRenderer, gripperControls;
 let gripperModels = [];  // Array to store multiple STL models
 let gripperLinkMap = {};  // Map link names to Three.js objects
+let gripperLinkInitialTransforms = {};  // Store initial transforms for reset
 let urdfData = null;  // Parsed URDF data
 let handLandmarksData = null;
 let handTimestamps = [];  // Timestamps for each frame
@@ -399,36 +400,70 @@ async function loadGripperFromURDF(urdfData, stlFileMap) {
     
     // Build hierarchy based on joints
     const rootLinks = [];
-    
+
     for (const linkName in linkObjects) {
         const linkObj = linkObjects[linkName];
         const jointInfo = childToParent[linkName];
-        
+
         if (jointInfo) {
             // This link has a parent, apply joint transform
             const origin = jointInfo.origin || { xyz: [0, 0, 0], rpy: [0, 0, 0] };
             linkObj.position.set(origin.xyz[0], origin.xyz[1], origin.xyz[2]);
-            
+
             const quat = rpyToQuaternion(origin.rpy);
             linkObj.quaternion.set(quat.x, quat.y, quat.z, quat.w);
-            
+
             // Add to parent link group
             const parentObj = linkObjects[jointInfo.parent];
             if (parentObj) {
                 parentObj.add(linkObj);
             } else {
-                gripperScene.add(linkObj);
+                rootLinks.push(linkObj);
             }
         } else {
             // Root link (no parent)
             rootLinks.push(linkObj);
-            gripperScene.add(linkObj);
         }
-        
+
         gripperLinkMap[linkName] = linkObj;
     }
-    
+
+    // Create a root group for the entire robot to handle coordinate system conversion
+    // URDF uses Z-up (ROS convention), Three.js uses Y-up
+    const robotRoot = new THREE.Group();
+    robotRoot.name = 'robot_root';
+    robotRoot.userData.isGripper = true;
+    robotRoot.userData.isRobotRoot = true;
+
+    // Add all root links to the robot root
+    rootLinks.forEach(linkObj => {
+        robotRoot.add(linkObj);
+    });
+
+    // Convert from URDF coordinate system (Z-up) to Three.js (Y-up)
+    // Rotate -90 degrees around X axis
+    robotRoot.rotation.x = -Math.PI / 2;
+
+    gripperScene.add(robotRoot);
+
+    // Store robot root for later transformations
+    gripperLinkMap['_robot_root'] = robotRoot;
+
+    // Save initial transforms for reset functionality
+    gripperLinkInitialTransforms = {};
+    for (const linkName in gripperLinkMap) {
+        const linkObj = gripperLinkMap[linkName];
+        if (linkObj) {
+            gripperLinkInitialTransforms[linkName] = {
+                position: linkObj.position.clone(),
+                quaternion: linkObj.quaternion.clone(),
+                rotation: linkObj.rotation.clone()
+            };
+        }
+    }
+
     console.log(`Loaded gripper from URDF: ${Object.keys(linkObjects).length} links`);
+    console.log('Saved initial transforms for links:', Object.keys(gripperLinkInitialTransforms));
 }
 
 // Load multiple STL models (manual mode, without URDF)
@@ -838,16 +873,15 @@ function handleStlFilesChange(e) {
             stlFileInfo.style.fontStyle = 'normal';
         }
 
-        // Display file list
+        // Display file list (compact grid layout)
         if (stlFileList) {
-            let fileListHtml = '<div style="margin-top: 5px; padding: 8px; background: #f8f9fa; border-radius: 4px;">';
+            let fileListHtml = '';
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                fileListHtml += `<div style="font-size: 0.85rem; margin: 3px 0;">
-                    ${i + 1}. ${file.name} (${formatFileSize(file.size)})
-                </div>`;
+                // Truncate long filenames
+                const shortName = file.name.length > 25 ? file.name.substring(0, 22) + '...' : file.name;
+                fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${file.name}">${shortName}</div>`;
             }
-            fileListHtml += '</div>';
             stlFileList.innerHTML = fileListHtml;
         }
 
@@ -1053,18 +1087,19 @@ function applyConfig(config) {
         }
         
         if (config.stl_filenames && config.stl_filenames.length > 0 && stlFileInfo) {
-            stlFileInfo.textContent = `配置中: ${config.stl_filenames.length} 个文件 (请重新选择这些文件)`;
+            stlFileInfo.textContent = `配置中: ${config.stl_filenames.length} 个文件 (请重新选择)`;
             stlFileInfo.style.color = '#ff9800';
             stlFileInfo.style.fontStyle = 'italic';
-            
-            // Show file list
-            let fileListHtml = '<div style="margin-top: 5px; padding: 8px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px; font-size: 0.85rem;">';
-            fileListHtml += '<div style="font-weight: 600; color: #856404; margin-bottom: 5px;">配置文件中的文件：</div>';
-            config.stl_filenames.forEach((name, index) => {
-                fileListHtml += `<div style="color: #856404; margin: 2px 0;">${index + 1}. ${name}</div>`;
-            });
-            fileListHtml += '</div>';
-            stlFileList.innerHTML = fileListHtml;
+
+            // Show file list (compact grid)
+            if (stlFileList) {
+                let fileListHtml = '';
+                config.stl_filenames.forEach((name) => {
+                    const shortName = name.length > 25 ? name.substring(0, 22) + '...' : name;
+                    fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #fff3cd; border-radius: 3px; color: #856404; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${shortName}</div>`;
+                });
+                stlFileList.innerHTML = fileListHtml;
+            }
         }
         
         // Save to localStorage
@@ -1154,15 +1189,16 @@ function loadSavedFileInfo() {
                     stlFileInfo.textContent = `上次使用: ${stlNames.length} 个文件`;
                     stlFileInfo.style.color = '#6c757d';
                     stlFileInfo.style.fontStyle = 'italic';
-                    
-                    // Show file list
-                    let fileListHtml = '<div style="margin-top: 5px; padding: 8px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px; font-size: 0.85rem;">';
-                    fileListHtml += '<div style="font-weight: 600; color: #1976d2; margin-bottom: 5px;">上次使用的文件：</div>';
-                    stlNames.forEach((name, index) => {
-                        fileListHtml += `<div style="color: #1565c0; margin: 2px 0;">${index + 1}. ${name}</div>`;
-                    });
-                    fileListHtml += '</div>';
-                    stlFileList.innerHTML = fileListHtml;
+
+                    // Show file list (compact grid)
+                    if (stlFileList) {
+                        let fileListHtml = '';
+                        stlNames.forEach((name) => {
+                            const shortName = name.length > 25 ? name.substring(0, 22) + '...' : name;
+                            fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e3f2fd; border-radius: 3px; color: #1565c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${shortName}</div>`;
+                        });
+                        stlFileList.innerHTML = fileListHtml;
+                    }
                     hasSavedInfo = true;
                 }
             } catch (e) {
@@ -1437,11 +1473,33 @@ if (!uploadForm) {
                 // Start animation loop
                 console.log('Starting animation loop...');
                 animate();
+
+                // Show IK status
+                if (data.ik_loaded) {
+                    console.log('IK chain loaded:', data.ik_joint_names);
+                    ikChainLoaded = true;
+                    // Show a brief notification
+                    const ikPanel = document.getElementById('ik-panel');
+                    if (ikPanel) {
+                        const statusNote = document.createElement('div');
+                        statusNote.style.cssText = 'margin-top: 10px; padding: 8px; background: #c8e6c9; border-radius: 4px; color: #2e7d32;';
+                        statusNote.innerHTML = `✅ IK 服务已就绪 (${data.ik_joint_names?.length || 0} 个关节)`;
+                        statusNote.id = 'ik-ready-note';
+                        // Remove existing note if any
+                        const existingNote = document.getElementById('ik-ready-note');
+                        if (existingNote) existingNote.remove();
+                        ikPanel.insertBefore(statusNote, ikPanel.firstChild.nextSibling);
+                    }
+                } else if (data.ik_available === false) {
+                    console.warn('ikpy not installed on server');
+                } else {
+                    console.warn('IK chain not loaded (no URDF?)');
+                }
             }, 100);
             setTimeout(() => {
                 visualizationSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, 100);
-            
+
             // Save file info after successful load
             saveFileInfo();
 
@@ -1776,7 +1834,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     stlFileInfo.style.color = '#28a745';
                 }
                 if (stlFileList) {
-                    stlFileList.innerHTML = stlFiles.map(f => `<div>• ${f.name}</div>`).join('');
+                    let fileListHtml = '';
+                    stlFiles.forEach((f) => {
+                        const shortName = f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name;
+                        fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.name}">${shortName}</div>`;
+                    });
+                    stlFileList.innerHTML = fileListHtml;
                 }
                 console.log(`✅ 从文件夹中加载了 ${stlFiles.length} 个 STL 文件`);
                 saveFileInfo();
@@ -1784,6 +1847,91 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
         console.log('STL folder input listener attached');
+    }
+
+    // Handle auto folder input - automatically detect CSV, URDF, STL files
+    const autoFolderInput = document.getElementById('auto_folder');
+    if (autoFolderInput) {
+        autoFolderInput.addEventListener('change', function(e) {
+            const allFiles = Array.from(e.target.files);
+            console.log(`Auto folder: found ${allFiles.length} files total`);
+
+            // Categorize files
+            const csvFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.csv'));
+            const urdfFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.urdf') || f.name.toLowerCase().endsWith('.xml'));
+            const stlFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.stl'));
+
+            console.log(`Auto folder: ${csvFiles.length} CSV, ${urdfFiles.length} URDF, ${stlFiles.length} STL`);
+
+            // Set MPS CSV file (prefer files with 'mps' or 'hand' in name)
+            if (csvFiles.length > 0 && mpsFileInput) {
+                let mpsFile = csvFiles.find(f => f.name.toLowerCase().includes('mps') || f.name.toLowerCase().includes('hand'));
+                if (!mpsFile) mpsFile = csvFiles[0];
+
+                const dt = new DataTransfer();
+                dt.items.add(mpsFile);
+                mpsFileInput.files = dt.files;
+
+                if (mpsFileInfo) {
+                    mpsFileInfo.textContent = mpsFile.name;
+                    mpsFileInfo.style.color = '#28a745';
+                    mpsFileInfo.style.fontStyle = 'normal';
+                }
+                console.log(`✅ 自动选择 MPS 文件: ${mpsFile.name}`);
+            }
+
+            // Set URDF file (prefer files with 'urdf' in name)
+            if (urdfFiles.length > 0 && urdfFileInput) {
+                let urdfFile = urdfFiles.find(f => f.name.toLowerCase().endsWith('.urdf'));
+                if (!urdfFile) urdfFile = urdfFiles[0];
+
+                const dt = new DataTransfer();
+                dt.items.add(urdfFile);
+                urdfFileInput.files = dt.files;
+
+                if (urdfFileInfo) {
+                    urdfFileInfo.textContent = urdfFile.name;
+                    urdfFileInfo.style.color = '#28a745';
+                    urdfFileInfo.style.fontStyle = 'normal';
+                }
+                console.log(`✅ 自动选择 URDF 文件: ${urdfFile.name}`);
+            }
+
+            // Set STL files
+            if (stlFiles.length > 0 && stlFilesInput) {
+                const dt = new DataTransfer();
+                stlFiles.forEach(f => dt.items.add(f));
+                stlFilesInput.files = dt.files;
+
+                if (stlFileInfo) {
+                    stlFileInfo.textContent = `已选择 ${stlFiles.length} 个 STL 文件`;
+                    stlFileInfo.style.color = '#28a745';
+                    stlFileInfo.style.fontStyle = 'normal';
+                }
+                if (stlFileList) {
+                    let fileListHtml = '';
+                    stlFiles.forEach((f) => {
+                        const shortName = f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name;
+                        fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.name}">${shortName}</div>`;
+                    });
+                    stlFileList.innerHTML = fileListHtml;
+                }
+                console.log(`✅ 自动选择 ${stlFiles.length} 个 STL 文件`);
+            }
+
+            saveFileInfo();
+            checkFormValidity();
+
+            // Show summary
+            const summary = [];
+            if (csvFiles.length > 0) summary.push(`${csvFiles.length} CSV`);
+            if (urdfFiles.length > 0) summary.push(`${urdfFiles.length} URDF`);
+            if (stlFiles.length > 0) summary.push(`${stlFiles.length} STL`);
+            if (summary.length > 0) {
+                console.log(`✅ 自动加载完成: ${summary.join(', ')}`);
+            }
+        });
+        console.log('Auto folder input listener attached');
     }
 
     // Note: We don't initialize scenes on page load because visualizationSection is hidden
@@ -1817,6 +1965,357 @@ window.addEventListener('resize', function() {
             gripperCamera.updateProjectionMatrix();
             gripperRenderer.setSize(gripperCanvas.clientWidth, gripperCanvas.clientHeight);
         }
+    }
+});
+
+// ==================== IK Control ====================
+
+// IK state
+let ikTargetMarker = null;
+let ikChainLoaded = false;
+let lastIKResult = null;
+
+/**
+ * Initialize IK control panel
+ */
+function initIKControls() {
+    const computeBtn = document.getElementById('ik-compute-btn');
+    const resetBtn = document.getElementById('ik-reset-btn');
+    const showTargetCheckbox = document.getElementById('show-ik-target');
+    const presetBtns = document.querySelectorAll('.ik-preset-btn');
+
+    if (computeBtn) {
+        computeBtn.addEventListener('click', computeIK);
+    }
+
+    if (resetBtn) {
+        resetBtn.addEventListener('click', resetIK);
+    }
+
+    if (showTargetCheckbox) {
+        showTargetCheckbox.addEventListener('change', function(e) {
+            if (ikTargetMarker) {
+                ikTargetMarker.visible = e.target.checked;
+            }
+        });
+    }
+
+    // Preset buttons
+    presetBtns.forEach(btn => {
+        btn.addEventListener('click', function() {
+            const x = parseFloat(this.dataset.x);
+            const y = parseFloat(this.dataset.y);
+            const z = parseFloat(this.dataset.z);
+
+            document.getElementById('ik-target-x').value = x;
+            document.getElementById('ik-target-y').value = y;
+            document.getElementById('ik-target-z').value = z;
+
+            // Auto compute
+            computeIK();
+        });
+    });
+
+    // Create target marker sphere
+    createIKTargetMarker();
+
+    console.log('IK controls initialized');
+}
+
+/**
+ * Create a red sphere to mark IK target position
+ */
+function createIKTargetMarker() {
+    if (!gripperScene) return;
+
+    // Remove existing marker
+    if (ikTargetMarker) {
+        if (ikTargetMarker.parent) {
+            ikTargetMarker.parent.remove(ikTargetMarker);
+        }
+        ikTargetMarker.geometry.dispose();
+        ikTargetMarker.material.dispose();
+    }
+
+    const geometry = new THREE.SphereGeometry(0.015, 16, 16);
+    const material = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.8
+    });
+    ikTargetMarker = new THREE.Mesh(geometry, material);
+    ikTargetMarker.visible = false;
+    ikTargetMarker.userData.isIKTarget = true;
+
+    // Add to robot root if available (so it shares the same coordinate transform)
+    // Otherwise add directly to scene
+    const robotRoot = gripperLinkMap['_robot_root'];
+    if (robotRoot) {
+        robotRoot.add(ikTargetMarker);
+    } else {
+        gripperScene.add(ikTargetMarker);
+    }
+}
+
+/**
+ * Load URDF for IK calculation
+ */
+async function loadIKChain(urdfPath) {
+    try {
+        const response = await fetch('/ik/load_urdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                urdf_path: urdfPath,
+                base_link: 'base_link',
+                end_link: 'gripper_frame_link'
+            })
+        });
+
+        const result = await response.json();
+        if (result.success) {
+            ikChainLoaded = true;
+            console.log('IK chain loaded:', result.joint_names);
+            return true;
+        } else {
+            console.error('Failed to load IK chain:', result.error);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error loading IK chain:', error);
+        return false;
+    }
+}
+
+/**
+ * Compute IK for target position
+ */
+async function computeIK() {
+    const targetX = parseFloat(document.getElementById('ik-target-x').value) || 0;
+    const targetY = parseFloat(document.getElementById('ik-target-y').value) || 0;
+    const targetZ = parseFloat(document.getElementById('ik-target-z').value) || 0;
+
+    const statusDiv = document.getElementById('ik-status');
+    const statusText = document.getElementById('ik-status-text');
+    const errorText = document.getElementById('ik-position-error');
+    const jointAnglesDiv = document.getElementById('ik-joint-angles');
+    const jointAnglesList = document.getElementById('joint-angles-list');
+
+    // Show status
+    if (statusDiv) statusDiv.style.display = 'block';
+    if (statusText) statusText.textContent = '计算中...';
+    if (statusText) statusText.style.color = '#1976d2';
+
+    // Update target marker position
+    // Since ikTargetMarker is now a child of robot_root (which handles the coordinate transform),
+    // we can use URDF coordinates directly
+    if (ikTargetMarker) {
+        ikTargetMarker.position.set(targetX, targetY, targetZ);
+        ikTargetMarker.visible = document.getElementById('show-ik-target')?.checked ?? true;
+
+        // If marker is not yet attached to robot root, try to attach it now
+        const robotRoot = gripperLinkMap['_robot_root'];
+        if (robotRoot && ikTargetMarker.parent !== robotRoot) {
+            if (ikTargetMarker.parent) {
+                ikTargetMarker.parent.remove(ikTargetMarker);
+            }
+            robotRoot.add(ikTargetMarker);
+        }
+    }
+
+    try {
+        // Prepare initial angles from last result for better convergence
+        const requestBody = {
+            position: [targetX, targetY, targetZ]
+        };
+
+        if (lastIKResult && lastIKResult.joint_angles) {
+            requestBody.initial_angles = lastIKResult.joint_angles;
+        }
+
+        const response = await fetch('/ik', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            lastIKResult = result;
+
+            // Update status
+            if (statusText) {
+                statusText.textContent = '✓ 计算成功';
+                statusText.style.color = '#2e7d32';
+            }
+            if (errorText) {
+                errorText.textContent = result.position_error.toFixed(6);
+            }
+
+            // Show joint angles
+            if (jointAnglesDiv) jointAnglesDiv.style.display = 'block';
+            if (jointAnglesList) {
+                jointAnglesList.innerHTML = result.joint_names.map((name, i) => {
+                    const rad = result.joint_angles[i];
+                    const deg = (rad * 180 / Math.PI).toFixed(2);
+                    return `
+                        <div style="padding: 8px; background: #c8e6c9; border-radius: 4px;">
+                            <strong>${name}</strong><br>
+                            <span style="font-family: monospace;">${rad.toFixed(4)} rad</span><br>
+                            <span style="font-family: monospace; color: #558b2f;">${deg}°</span>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Apply joint angles to the model
+            applyJointAngles(result.joint_names, result.joint_angles);
+
+            console.log('IK result:', result);
+
+        } else {
+            if (statusText) {
+                statusText.textContent = '✗ ' + (result.error || '计算失败');
+                statusText.style.color = '#d32f2f';
+            }
+            console.error('IK failed:', result.error);
+        }
+
+    } catch (error) {
+        if (statusText) {
+            statusText.textContent = '✗ 网络错误: ' + error.message;
+            statusText.style.color = '#d32f2f';
+        }
+        console.error('IK request error:', error);
+    }
+}
+
+/**
+ * Apply joint angles to the Three.js model
+ *
+ * Important: IK joint angles are relative rotations around each joint axis.
+ * We need to apply them on top of the initial URDF transforms, not replace them.
+ *
+ * For SO-101 robot arm:
+ * - All joints rotate around local Z axis (URDF convention)
+ * - The initial transforms from URDF define the zero position of each joint
+ * - IK angles are added to this zero position
+ */
+function applyJointAngles(jointNames, jointAngles) {
+    if (!gripperLinkMap || Object.keys(gripperLinkMap).length === 0) {
+        console.warn('No gripper model loaded to apply joint angles');
+        return;
+    }
+
+    if (!gripperLinkInitialTransforms || Object.keys(gripperLinkInitialTransforms).length === 0) {
+        console.warn('No initial transforms saved - cannot apply IK angles correctly');
+        return;
+    }
+
+    // Map joint names to the link they control (child link of each joint)
+    // Joint names in SO-101: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
+    const jointToLinkMap = {
+        'shoulder_pan': 'shoulder_link',
+        'shoulder_lift': 'upper_arm_link',
+        'elbow_flex': 'lower_arm_link',
+        'wrist_flex': 'wrist_link',
+        'wrist_roll': 'gripper_link'
+    };
+
+    jointNames.forEach((jointName, index) => {
+        const angle = jointAngles[index];
+        const linkName = jointToLinkMap[jointName];
+
+        if (linkName && gripperLinkMap[linkName]) {
+            const linkGroup = gripperLinkMap[linkName];
+            const initialTransform = gripperLinkInitialTransforms[linkName];
+
+            if (!initialTransform) {
+                console.warn(`No initial transform for link ${linkName}`);
+                return;
+            }
+
+            // First restore the initial quaternion (URDF joint origin rotation)
+            linkGroup.quaternion.copy(initialTransform.quaternion);
+
+            // Then apply the IK joint angle as additional rotation around local Z axis
+            // Create a quaternion for the joint rotation (around Z axis)
+            const jointRotation = new THREE.Quaternion();
+            jointRotation.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle);
+
+            // Multiply: final = initial * jointRotation
+            // This applies the joint rotation in the local frame after the initial orientation
+            linkGroup.quaternion.multiply(jointRotation);
+
+            console.log(`Applied ${jointName} -> ${linkName}: ${angle.toFixed(4)} rad (on top of initial transform)`);
+        }
+    });
+}
+
+/**
+ * Reset robot to home position (restore initial URDF transforms)
+ */
+function resetIK() {
+    lastIKResult = null;
+
+    // Reset input fields
+    document.getElementById('ik-target-x').value = '0.15';
+    document.getElementById('ik-target-y').value = '0.0';
+    document.getElementById('ik-target-z').value = '0.2';
+
+    // Hide status
+    const statusDiv = document.getElementById('ik-status');
+    const jointAnglesDiv = document.getElementById('ik-joint-angles');
+    if (statusDiv) statusDiv.style.display = 'none';
+    if (jointAnglesDiv) jointAnglesDiv.style.display = 'none';
+
+    // Hide target marker
+    if (ikTargetMarker) {
+        ikTargetMarker.visible = false;
+    }
+
+    // Restore all links to their initial transforms (from URDF loading)
+    if (gripperLinkMap && gripperLinkInitialTransforms) {
+        for (const linkName in gripperLinkMap) {
+            const linkGroup = gripperLinkMap[linkName];
+            const initialTransform = gripperLinkInitialTransforms[linkName];
+
+            if (linkGroup && initialTransform) {
+                linkGroup.position.copy(initialTransform.position);
+                linkGroup.quaternion.copy(initialTransform.quaternion);
+            }
+        }
+    }
+
+    console.log('IK reset to home position (restored initial transforms)');
+}
+
+// Initialize IK controls when visualization section becomes visible
+const ikObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(mutation) {
+        if (mutation.attributeName === 'style') {
+            const section = document.getElementById('visualizationSection');
+            if (section && section.style.display !== 'none') {
+                // Initialize IK controls when section is shown
+                setTimeout(() => {
+                    initIKControls();
+
+                    // Create target marker if scene is ready
+                    if (gripperScene && !ikTargetMarker) {
+                        createIKTargetMarker();
+                    }
+                }, 500);
+            }
+        }
+    });
+});
+
+// Start observing
+document.addEventListener('DOMContentLoaded', function() {
+    const section = document.getElementById('visualizationSection');
+    if (section) {
+        ikObserver.observe(section, { attributes: true });
     }
 });
 

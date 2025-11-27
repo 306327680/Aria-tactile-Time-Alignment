@@ -294,23 +294,30 @@
                 </div>
                 
                 <form id="uploadForm" enctype="multipart/form-data">
+                    <!-- Quick folder select -->
+                    <div style="margin-bottom: 15px; padding: 12px; background: #e8f5e9; border-radius: 6px; border-left: 4px solid #4caf50;">
+                        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                            <label for="auto_folder" style="padding: 8px 16px; background: #4caf50; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;">
+                                📁 一键选择文件夹
+                                <input type="file" id="auto_folder" webkitdirectory directory multiple style="display: none;">
+                            </label>
+                            <span style="color: #2e7d32; font-size: 0.9rem;">自动识别 CSV、URDF、STL 文件</span>
+                        </div>
+                    </div>
+
                     <div class="file-input-group">
                         <div class="file-input-wrapper">
                             <label for="mps_file">MPS CSV 文件（手部数据，可选）:</label>
                             <input type="file" id="mps_file" name="mps_file" accept=".csv">
-                            <span class="file-info" id="mps-file-info">未选择文件（可仅上传夹爪模型测试显示）</span>
+                            <span class="file-info" id="mps-file-info">未选择文件</span>
                         </div>
                         <div class="file-input-wrapper">
-                            <label for="urdf_file">URDF 文件（推荐，包含完整模型定义）:</label>
+                            <label for="urdf_file">URDF 文件:</label>
                             <input type="file" id="urdf_file" name="urdf_file" accept=".urdf,.xml">
                             <span class="file-info" id="urdf-file-info">未选择文件</span>
-                            <small style="color: #6c757d; display: block; margin-top: 5px;">
-                                <strong>推荐方式：</strong>上传 URDF 文件，系统会自动加载所有相关 STL 文件并正确组装<br>
-                                URDF 文件定义了各零件的相对位置、旋转和连接关系
-                            </small>
                         </div>
                         <div class="file-input-wrapper" style="margin-top: 15px;">
-                            <label>或手动上传 STL 文件（夹爪零件，可选）:</label>
+                            <label>STL 文件（夹爪零件）:</label>
                             <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px;">
                                 <label for="stl_folder" style="padding: 8px 16px; background: #667eea; color: white; border-radius: 6px; cursor: pointer; font-size: 0.9rem; display: inline-block;">
                                     📁 选择文件夹（自动加载所有 STL）
@@ -321,19 +328,15 @@
                                     <input type="file" id="stl_files" name="stl_files" accept=".stl" multiple style="display: none;">
                                 </label>
                             </div>
-                            <span class="file-info" id="stl-file-info" style="display: block; margin-top: 10px;">未选择文件（将仅显示手部关键点）</span>
-                            <div id="stl-file-list" style="margin-top: 8px; font-size: 0.9rem; color: #6c757d;"></div>
-                            <small style="color: #6c757d; display: block; margin-top: 5px;">
-                                <strong>推荐：</strong>使用"选择文件夹"按钮，可以一次性加载文件夹中的所有 STL 文件<br>
-                                <strong>手动方式：</strong>如果不使用 URDF，可以手动选择所有 STL 文件<br>
-                                • 基座/底座 (Base)<br>
-                                • 左手指 (Left Finger)<br>
-                                • 右手指 (Right Finger)<br>
-                                • 其他连接件（如有）<br>
-                                <br>
-                                <strong>文件来源：</strong><br>
-                                • URDF/STL 文件：从 <a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank">SO-ARM100 仓库</a> 下载
-                            </small>
+                            <span class="file-info" id="stl-file-info" style="display: block; margin-top: 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">未选择文件（将仅显示手部关键点）</span>
+                            <div id="stl-file-list" style="margin-top: 8px; font-size: 0.85rem; color: #6c757d; max-height: 80px; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px;"></div>
+                            <details style="margin-top: 8px;">
+                                <summary style="color: #6c757d; cursor: pointer; font-size: 0.85rem;">📋 文件说明（点击展开）</summary>
+                                <small style="color: #6c757d; display: block; margin-top: 5px; padding-left: 10px;">
+                                    <strong>推荐：</strong>使用"选择文件夹"按钮加载所有 STL 文件<br>
+                                    <strong>文件来源：</strong><a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank">SO-ARM100 仓库</a>
+                                </small>
+                            </details>
                         </div>
                     </div>
                     <div class="action-section">
@@ -400,43 +403,113 @@
                 </div>
 
                 <!-- Controls Panel -->
-                <div class="controls-panel">
-                    <h3>控制参数</h3>
-                    
-                    <div class="control-group">
-                        <label>映射比例:</label>
-                        <input type="range" id="scale-slider" min="0.1" max="5" step="0.1" value="1">
-                        <span id="scale-value">1.0</span>
+                <div class="controls-panel" style="padding: 15px;">
+                    <h3 style="margin: 0 0 12px 0; font-size: 1rem;">控制参数</h3>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: center;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="white-space: nowrap; font-size: 0.9rem;">比例:</label>
+                            <input type="range" id="scale-slider" min="0.1" max="5" step="0.1" value="1" style="width: 80px;">
+                            <span id="scale-value" style="font-size: 0.9rem; min-width: 30px;">1.0</span>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="white-space: nowrap; font-size: 0.9rem;">X:</label>
+                            <input type="number" id="offset-x" value="0" step="0.01" style="width: 70px; padding: 4px 6px;">
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="white-space: nowrap; font-size: 0.9rem;">Y:</label>
+                            <input type="number" id="offset-y" value="0" step="0.01" style="width: 70px; padding: 4px 6px;">
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <label style="white-space: nowrap; font-size: 0.9rem;">Z:</label>
+                            <input type="number" id="offset-z" value="0" step="0.01" style="width: 70px; padding: 4px 6px;">
+                        </div>
+
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer;">
+                            <input type="checkbox" id="show-skeleton" checked>
+                            <span>骨架</span>
+                        </label>
+
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer;">
+                            <input type="checkbox" id="show-gripper" checked>
+                            <span>夹爪</span>
+                        </label>
+
+                        <button id="apply-settings" class="btn-primary" style="padding: 6px 12px; font-size: 0.9rem;">
+                            应用
+                        </button>
+                    </div>
+                </div>
+
+                <!-- IK Control Panel -->
+                <div class="controls-panel" id="ik-panel" style="margin-top: 20px; background: #e8f5e9; border-left: 4px solid #4caf50;">
+                    <h3 style="color: #2e7d32;">🎯 逆运动学控制 (IK)</h3>
+                    <p style="color: #558b2f; margin-bottom: 15px; font-size: 0.9rem;">
+                        输入目标末端位置，计算机械臂关节角度
+                    </p>
+
+                    <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end;">
+                        <div class="control-group" style="margin-bottom: 0;">
+                            <label>目标 X (m):</label>
+                            <input type="number" id="ik-target-x" value="0.15" step="0.01" style="width: 100px;">
+                        </div>
+                        <div class="control-group" style="margin-bottom: 0;">
+                            <label>目标 Y (m):</label>
+                            <input type="number" id="ik-target-y" value="0.0" step="0.01" style="width: 100px;">
+                        </div>
+                        <div class="control-group" style="margin-bottom: 0;">
+                            <label>目标 Z (m):</label>
+                            <input type="number" id="ik-target-z" value="0.2" step="0.01" style="width: 100px;">
+                        </div>
+                        <button id="ik-compute-btn" class="btn-primary" style="background: #4caf50; padding: 10px 20px;">
+                            🔄 计算 IK
+                        </button>
+                        <button id="ik-reset-btn" style="padding: 10px 20px; background: #ff9800; color: white; border: none; border-radius: 6px; cursor: pointer;">
+                            ↩️ 复位
+                        </button>
                     </div>
 
-                    <div class="control-group">
-                        <label>X偏移 (m):</label>
-                        <input type="number" id="offset-x" value="0" step="0.01">
+                    <!-- IK Status -->
+                    <div id="ik-status" style="margin-top: 15px; padding: 10px; background: #f1f8e9; border-radius: 6px; display: none;">
+                        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                            <div>
+                                <strong>状态:</strong> <span id="ik-status-text">未计算</span>
+                            </div>
+                            <div>
+                                <strong>位置误差:</strong> <span id="ik-position-error">-</span> m
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="control-group">
-                        <label>Y偏移 (m):</label>
-                        <input type="number" id="offset-y" value="0" step="0.01">
+                    <!-- Joint Angles Display -->
+                    <div id="ik-joint-angles" style="margin-top: 15px; display: none;">
+                        <h4 style="color: #2e7d32; margin-bottom: 10px;">关节角度 (rad / deg):</h4>
+                        <div id="joint-angles-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;"></div>
                     </div>
 
-                    <div class="control-group">
-                        <label>Z偏移 (m):</label>
-                        <input type="number" id="offset-z" value="0" step="0.01">
+                    <!-- Target Marker Toggle -->
+                    <div style="margin-top: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="show-ik-target" checked>
+                            <span>显示目标位置标记 (红色球)</span>
+                        </label>
                     </div>
 
-                    <div class="control-group">
-                        <label>显示手部骨架:</label>
-                        <input type="checkbox" id="show-skeleton" checked>
+                    <!-- Quick Position Presets -->
+                    <div style="margin-top: 15px;">
+                        <label style="font-weight: 600; color: #2e7d32;">快速预设位置:</label>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;">
+                            <button class="ik-preset-btn" data-x="0.15" data-y="0" data-z="0.2" style="padding: 6px 12px; background: #81c784; color: white; border: none; border-radius: 4px; cursor: pointer;">前方</button>
+                            <button class="ik-preset-btn" data-x="0" data-y="0.15" data-z="0.2" style="padding: 6px 12px; background: #81c784; color: white; border: none; border-radius: 4px; cursor: pointer;">左侧</button>
+                            <button class="ik-preset-btn" data-x="0" data-y="-0.15" data-z="0.2" style="padding: 6px 12px; background: #81c784; color: white; border: none; border-radius: 4px; cursor: pointer;">右侧</button>
+                            <button class="ik-preset-btn" data-x="0.1" data-y="0" data-z="0.3" style="padding: 6px 12px; background: #81c784; color: white; border: none; border-radius: 4px; cursor: pointer;">上方</button>
+                            <button class="ik-preset-btn" data-x="0.2" data-y="0" data-z="0.1" style="padding: 6px 12px; background: #81c784; color: white; border: none; border-radius: 4px; cursor: pointer;">低位</button>
+                            <button class="ik-preset-btn" data-x="0.39" data-y="0" data-z="0.23" style="padding: 6px 12px; background: #66bb6a; color: white; border: none; border-radius: 4px; cursor: pointer;">零位 (Home)</button>
+                        </div>
                     </div>
-
-                    <div class="control-group">
-                        <label>显示夹爪模型:</label>
-                        <input type="checkbox" id="show-gripper" checked>
-                    </div>
-
-                    <button id="apply-settings" class="btn-primary" style="margin-top: 15px;">
-                        应用设置
-                    </button>
                 </div>
 
                 <!-- Mapping Info -->
@@ -465,7 +538,7 @@
 
     <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <!-- Gripper visualization (non-module for THREE.js compatibility) -->
-    <script src="{{ url_for('static', filename='js/gripper/gripper.js') }}?v=16"></script>
+    <script src="{{ url_for('static', filename='js/gripper/gripper.js') }}?v=24"></script>
 </body>
 </html>
 
