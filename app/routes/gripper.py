@@ -1,0 +1,179 @@
+"""
+Gripper visualization routes
+"""
+
+import os
+from flask import Blueprint, render_template, request, jsonify, send_file, current_app
+from werkzeug.utils import secure_filename
+
+from aria_haptic_align import ARIA_API_AVAILABLE
+from app.utils.urdf_parser import parse_urdf
+from app.utils.mps_loader import load_hand_landmarks
+from app.utils.file_utils import allowed_file
+
+
+bp = Blueprint('gripper', __name__, url_prefix='/gripper')
+
+
+@bp.route('/')
+def index():
+    """Render gripper visualization page"""
+    return render_template('gripper.html', aria_api_available=ARIA_API_AVAILABLE)
+
+
+@bp.route('/data', methods=['POST'])
+def gripper_data():
+    """Load data for gripper visualization"""
+    try:
+        # MPS file is optional (for testing display without hand data)
+        mps_file = request.files.get('mps_file')
+        urdf_file = request.files.get('urdf_file')
+        stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
+
+        # Check if at least one file type is provided
+        has_mps = mps_file and mps_file.filename != ''
+        has_urdf = urdf_file and urdf_file.filename != ''
+        has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
+        
+        if not (has_mps or has_urdf or has_stl):
+            return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
+
+        # Save MPS file if provided
+        mps_path = None
+        if has_mps:
+            mps_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(mps_file.filename))
+            mps_file.save(mps_path)
+
+        # Process URDF file if provided
+        urdf_data = None
+        urdf_path = None
+        if urdf_file and urdf_file.filename:
+            urdf_filename = secure_filename(urdf_file.filename)
+            urdf_path = os.path.join(current_app.config['UPLOAD_FOLDER'], urdf_filename)
+            urdf_file.save(urdf_path)
+            
+            try:
+                urdf_data = parse_urdf(urdf_path)
+                print(f"Parsed URDF: {len(urdf_data['links'])} links, {len(urdf_data['joints'])} joints")
+            except Exception as e:
+                return jsonify({'error': f'Failed to parse URDF file: {str(e)}'}), 400
+
+        # Save STL files if provided (manual upload or from URDF)
+        stl_urls = []
+        stl_filenames = []
+        stl_file_map = {}  # Map mesh filename to uploaded file URL
+        stl_file_map_case_insensitive = {}  # Case-insensitive mapping
+        missing_files = []  # Track missing STL files
+
+        # If URDF is provided, expect STL files to be uploaded with matching names
+        if urdf_data:
+            # Create a map of expected mesh filenames from URDF (case-insensitive)
+            expected_meshes = {}
+            expected_meshes_lower = {}  # Lowercase version for case-insensitive matching
+            for link in urdf_data['links']:
+                for visual in link['visuals']:
+                    if 'mesh' in visual and visual['mesh']:
+                        mesh_name = os.path.basename(visual['mesh'])
+                        expected_meshes[mesh_name] = visual['mesh']
+                        expected_meshes_lower[mesh_name.lower()] = mesh_name
+
+            # Match uploaded STL files with URDF mesh references (case-insensitive)
+            uploaded_files_lower = {}  # Track uploaded files by lowercase name
+            for stl_file in stl_files:
+                if stl_file and stl_file.filename:
+                    filename = secure_filename(stl_file.filename)
+                    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+
+                    if file_ext != 'stl':
+                        continue  # Skip non-STL files
+
+                    stl_path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
+                    stl_file.save(stl_path)
+                    stl_url = f'/gripper/uploaded_stl/{filename}'
+                    stl_urls.append(stl_url)
+                    stl_filenames.append(filename)
+
+                    # Map by basename for matching with URDF (case-insensitive)
+                    mesh_basename = os.path.basename(filename)
+                    stl_file_map[mesh_basename] = stl_url
+                    # Also create lowercase mapping for case-insensitive lookup
+                    uploaded_files_lower[mesh_basename.lower()] = mesh_basename
+
+            # Create case-insensitive mapping for frontend
+            for lower_name, original_name in uploaded_files_lower.items():
+                stl_file_map_case_insensitive[lower_name] = stl_file_map[original_name]
+
+            # Check for missing files
+            for link in urdf_data['links']:
+                for visual in link['visuals']:
+                    if 'mesh' in visual and visual['mesh']:
+                        mesh_name = os.path.basename(visual['mesh'])
+                        mesh_lower = mesh_name.lower()
+                        # Check both exact match and case-insensitive match
+                        if mesh_name not in stl_file_map and mesh_lower not in stl_file_map_case_insensitive:
+                            missing_files.append(mesh_name)
+        else:
+            # Manual STL file upload (no URDF)
+            for stl_file in stl_files:
+                if stl_file and stl_file.filename:
+                    filename = secure_filename(stl_file.filename)
+                    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+                    
+                    if file_ext != 'stl':
+                        return jsonify({'error': f'不支持的文件格式: {file_ext}。请上传 .stl 文件'}), 400
+                    
+                    stl_path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
+                    stl_file.save(stl_path)
+                    stl_urls.append(f'/gripper/uploaded_stl/{filename}')
+                    stl_filenames.append(filename)
+
+        # Load hand landmarks data from MPS CSV (if provided)
+        hand_landmarks_data = None
+        if mps_path:
+            try:
+                hand_landmarks_data = load_hand_landmarks(mps_path)
+            except Exception as e:
+                print(f"Warning: Failed to load hand landmarks from MPS file: {e}")
+                hand_landmarks_data = None
+
+        # Return data
+        result = {
+            'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
+            'stl_files': stl_filenames,
+            'stl_urls': stl_urls,
+            'stl_file_map': stl_file_map,
+            'stl_file_map_case_insensitive': stl_file_map_case_insensitive
+        }
+
+        # Add URDF data if available
+        if urdf_data:
+            result['urdf'] = urdf_data
+            result['urdf_filename'] = os.path.basename(urdf_path) if urdf_path else None
+
+        # Add warning for missing STL files
+        if missing_files:
+            result['missing_stl_files'] = missing_files
+            result['warning'] = f'以下 STL 文件在 URDF 中被引用但未上传: {", ".join(missing_files)}'
+
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error: {error_msg}\n{stack_trace}")
+        return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@bp.route('/uploaded_stl/<filename>')
+def uploaded_stl(filename):
+    """Serve uploaded STL files"""
+    try:
+        stl_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(filename))
+        if os.path.exists(stl_path):
+            return send_file(stl_path, mimetype='application/octet-stream')
+        else:
+            return jsonify({'error': 'STL file not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+

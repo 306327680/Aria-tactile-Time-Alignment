@@ -14,6 +14,7 @@ Dependencies:
 
 import os
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -25,11 +26,16 @@ from plotly.subplots import make_subplots
 import numpy as np
 import pandas as pd
 
-app = Flask(__name__)
+# Get the base directory
+base_dir = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__,
+            static_folder=os.path.join(base_dir, 'app', 'static'),
+            template_folder=os.path.join(base_dir, 'templates'))
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 
-ALLOWED_EXTENSIONS = {'vrs', 'csv'}
+ALLOWED_EXTENSIONS = {'vrs', 'csv', 'stl', 'step', 'stp', 'urdf', 'xml'}
 
 # Check required dependencies
 DEPENDENCIES_OK = True
@@ -630,6 +636,394 @@ def visualize_data():
         stack_trace = traceback.format_exc()
         print(f"Error: {error_msg}\n{stack_trace}")
         return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@app.route('/player')
+def player():
+    """Render data player page"""
+    return render_template('player.html', aria_api_available=ARIA_API_AVAILABLE)
+
+
+@app.route('/player_data', methods=['POST'])
+def player_data():
+    """Load data for player view"""
+    try:
+        # Check files
+        if 'mps_file' not in request.files or 'haptic_file' not in request.files:
+            return jsonify({'error': 'Missing MPS or haptic CSV file'}), 400
+
+        mps_file = request.files['mps_file']
+        haptic_file = request.files['haptic_file']
+        offset = float(request.form.get('offset', 0))
+
+        if mps_file.filename == '' or haptic_file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        # Save files
+        mps_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(mps_file.filename))
+        haptic_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(haptic_file.filename))
+        mps_file.save(mps_path)
+        haptic_file.save(haptic_path)
+
+        # Load data
+        aligner = AriaHapticAligner(mps_csv_path=mps_path, haptic_csv_path=haptic_path)
+        aligner.load_aria_data_from_mps_csv()
+        aligner.load_haptic_data()
+
+        # Normalize data
+        aria_range = aligner.aria_distance.max() - aligner.aria_distance.min()
+        if aria_range > 0:
+            aria_norm = (aligner.aria_distance - aligner.aria_distance.min()) / aria_range
+        else:
+            aria_norm = np.zeros_like(aligner.aria_distance)
+        aria_inverted = 1.0 - aria_norm
+
+        haptic_range = aligner.haptic_force.max() - aligner.haptic_force.min()
+        if haptic_range > 0:
+            haptic_norm = (aligner.haptic_force - aligner.haptic_force.min()) / haptic_range
+        else:
+            haptic_norm = np.zeros_like(aligner.haptic_force)
+
+        # Apply offset to haptic timestamps
+        haptic_timestamps_aligned = aligner.haptic_timestamps + offset
+
+        # Calculate combined time range
+        combined_min = min(aligner.aria_timestamps[0], haptic_timestamps_aligned[0])
+        combined_max = max(aligner.aria_timestamps[-1], haptic_timestamps_aligned[-1])
+
+        # Load full hand landmarks data from MPS CSV
+        hand_landmarks_data = load_hand_landmarks(mps_path)
+
+        # Get original haptic force range for denormalization in frontend
+        haptic_force_range = [float(aligner.haptic_force.min()), float(aligner.haptic_force.max())]
+
+        return jsonify({
+            'aria_timestamps': aligner.aria_timestamps.tolist(),
+            'aria_normalized': aria_inverted.tolist(),
+            'haptic_timestamps': aligner.haptic_timestamps.tolist(),
+            'haptic_timestamps_aligned': haptic_timestamps_aligned.tolist(),
+            'haptic_normalized': haptic_norm.tolist(),
+            'haptic_force_range': haptic_force_range,
+            'aria_count': len(aligner.aria_timestamps),
+            'haptic_count': len(aligner.haptic_timestamps),
+            'time_range': [float(combined_min), float(combined_max)],
+            'aria_time_range': [float(aligner.aria_timestamps[0]), float(aligner.aria_timestamps[-1])],
+            'haptic_time_range': [float(aligner.haptic_timestamps[0]), float(aligner.haptic_timestamps[-1])],
+            'offset': offset,
+            'hand_landmarks': hand_landmarks_data
+        })
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error: {error_msg}\n{stack_trace}")
+        return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+def parse_urdf(urdf_path):
+    """
+    Parse URDF file and extract link/joint information.
+    
+    Returns:
+        dict with links, joints, and mesh paths
+    """
+    try:
+        tree = ET.parse(urdf_path)
+        root = tree.getroot()
+        
+        urdf_data = {
+            'links': [],
+            'joints': [],
+            'mesh_paths': []
+        }
+        
+        # Parse links
+        for link in root.findall('link'):
+            link_name = link.get('name', '')
+            link_data = {
+                'name': link_name,
+                'visuals': [],
+                'collisions': []
+            }
+            
+            # Parse visual elements
+            for visual in link.findall('visual'):
+                visual_data = {}
+                
+                # Get origin
+                origin = visual.find('origin')
+                if origin is not None:
+                    xyz = origin.get('xyz', '0 0 0').split()
+                    rpy = origin.get('rpy', '0 0 0').split()
+                    visual_data['origin'] = {
+                        'xyz': [float(x) for x in xyz],
+                        'rpy': [float(r) for r in rpy]
+                    }
+                else:
+                    visual_data['origin'] = {'xyz': [0, 0, 0], 'rpy': [0, 0, 0]}
+                
+                # Get geometry (mesh)
+                geometry = visual.find('geometry')
+                if geometry is not None:
+                    mesh = geometry.find('mesh')
+                    if mesh is not None:
+                        filename = mesh.get('filename', '')
+                        # Remove package:// prefix if present
+                        if filename.startswith('package://'):
+                            filename = filename.replace('package://', '')
+                        # Remove leading slash
+                        filename = filename.lstrip('/')
+                        visual_data['mesh'] = filename
+                        if filename and filename not in urdf_data['mesh_paths']:
+                            urdf_data['mesh_paths'].append(filename)
+                
+                link_data['visuals'].append(visual_data)
+            
+            urdf_data['links'].append(link_data)
+        
+        # Parse joints
+        for joint in root.findall('joint'):
+            joint_name = joint.get('name', '')
+            joint_type = joint.get('type', 'fixed')
+            
+            joint_data = {
+                'name': joint_name,
+                'type': joint_type,
+                'parent': '',
+                'child': '',
+                'origin': {'xyz': [0, 0, 0], 'rpy': [0, 0, 0]}
+            }
+            
+            # Get parent and child links
+            parent = joint.find('parent')
+            if parent is not None:
+                joint_data['parent'] = parent.get('link', '')
+            
+            child = joint.find('child')
+            if child is not None:
+                joint_data['child'] = child.get('link', '')
+            
+            # Get origin
+            origin = joint.find('origin')
+            if origin is not None:
+                xyz = origin.get('xyz', '0 0 0').split()
+                rpy = origin.get('rpy', '0 0 0').split()
+                joint_data['origin'] = {
+                    'xyz': [float(x) for x in xyz],
+                    'rpy': [float(r) for r in rpy]
+                }
+            
+            urdf_data['joints'].append(joint_data)
+        
+        return urdf_data
+    
+    except Exception as e:
+        raise ValueError(f"Failed to parse URDF file: {str(e)}")
+
+
+def load_hand_landmarks(mps_csv_path):
+    """Load full 21-point hand landmarks from MPS CSV file"""
+    import csv
+
+    hand_data = {
+        'timestamps': [],
+        'left_hand': [],
+        'right_hand': [],
+        'left_confidence': [],
+        'right_confidence': []
+    }
+
+    # Get first timestamp for normalization
+    first_timestamp = None
+
+    with open(mps_csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            try:
+                # Get timestamp
+                timestamp_us = float(row['tracking_timestamp_us'])
+                if first_timestamp is None:
+                    first_timestamp = timestamp_us
+
+                # Normalize timestamp to seconds from start
+                timestamp_s = (timestamp_us - first_timestamp) / 1_000_000.0
+                hand_data['timestamps'].append(timestamp_s)
+
+                # Parse left hand landmarks (21 points)
+                left_confidence = float(row.get('left_tracking_confidence', -1))
+                hand_data['left_confidence'].append(left_confidence)
+
+                if left_confidence > 0:
+                    left_landmarks = []
+                    for i in range(21):
+                        x = float(row.get(f'tx_left_landmark_{i}_device', 0))
+                        y = float(row.get(f'ty_left_landmark_{i}_device', 0))
+                        z = float(row.get(f'tz_left_landmark_{i}_device', 0))
+                        left_landmarks.append([x, y, z])
+                    hand_data['left_hand'].append(left_landmarks)
+                else:
+                    hand_data['left_hand'].append(None)
+
+                # Parse right hand landmarks (21 points)
+                right_confidence = float(row.get('right_tracking_confidence', -1))
+                hand_data['right_confidence'].append(right_confidence)
+
+                if right_confidence > 0:
+                    right_landmarks = []
+                    for i in range(21):
+                        x = float(row.get(f'tx_right_landmark_{i}_device', 0))
+                        y = float(row.get(f'ty_right_landmark_{i}_device', 0))
+                        z = float(row.get(f'tz_right_landmark_{i}_device', 0))
+                        right_landmarks.append([x, y, z])
+                    hand_data['right_hand'].append(right_landmarks)
+                else:
+                    hand_data['right_hand'].append(None)
+
+            except Exception as e:
+                print(f"Error parsing hand row: {e}")
+                continue
+
+    return hand_data
+
+
+@app.route('/gripper')
+def gripper():
+    """Render gripper visualization page"""
+    return render_template('gripper.html', aria_api_available=ARIA_API_AVAILABLE)
+
+
+@app.route('/gripper_data', methods=['POST'])
+@app.route('/gripper/data', methods=['POST'])  # Also support new route format
+def gripper_data():
+    """Load data for gripper visualization"""
+    try:
+        # MPS file is optional (for testing display without hand data)
+        mps_file = request.files.get('mps_file')
+        urdf_file = request.files.get('urdf_file')
+        stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
+
+        # Check if at least one file type is provided
+        has_mps = mps_file and mps_file.filename != ''
+        has_urdf = urdf_file and urdf_file.filename != ''
+        has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
+        
+        if not (has_mps or has_urdf or has_stl):
+            return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
+
+        # Save MPS file if provided
+        mps_path = None
+        if has_mps:
+            mps_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(mps_file.filename))
+            mps_file.save(mps_path)
+
+        # Process URDF file if provided
+        urdf_data = None
+        urdf_path = None
+        if urdf_file and urdf_file.filename:
+            urdf_filename = secure_filename(urdf_file.filename)
+            urdf_path = os.path.join(app.config['UPLOAD_FOLDER'], urdf_filename)
+            urdf_file.save(urdf_path)
+            
+            try:
+                urdf_data = parse_urdf(urdf_path)
+                print(f"Parsed URDF: {len(urdf_data['links'])} links, {len(urdf_data['joints'])} joints")
+            except Exception as e:
+                return jsonify({'error': f'Failed to parse URDF file: {str(e)}'}), 400
+
+        # Save STL files if provided (manual upload or from URDF)
+        stl_urls = []
+        stl_filenames = []
+        stl_file_map = {}  # Map mesh filename to uploaded file URL
+        
+        # If URDF is provided, expect STL files to be uploaded with matching names
+        if urdf_data:
+            # Create a map of expected mesh filenames from URDF
+            expected_meshes = {}
+            for link in urdf_data['links']:
+                for visual in link['visuals']:
+                    if 'mesh' in visual and visual['mesh']:
+                        mesh_name = os.path.basename(visual['mesh'])
+                        expected_meshes[mesh_name] = visual['mesh']
+            
+            # Match uploaded STL files with URDF mesh references
+            for stl_file in stl_files:
+                if stl_file and stl_file.filename:
+                    filename = secure_filename(stl_file.filename)
+                    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+                    
+                    if file_ext != 'stl':
+                        continue  # Skip non-STL files
+                    
+                    stl_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    stl_file.save(stl_path)
+                    stl_url = f'/uploaded_stl/{filename}'
+                    stl_urls.append(stl_url)
+                    stl_filenames.append(filename)
+                    
+                    # Map by basename for matching with URDF
+                    mesh_basename = os.path.basename(filename)
+                    stl_file_map[mesh_basename] = stl_url
+        else:
+            # Manual STL file upload (no URDF)
+            for stl_file in stl_files:
+                if stl_file and stl_file.filename:
+                    filename = secure_filename(stl_file.filename)
+                    file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+                    
+                    if file_ext != 'stl':
+                        return jsonify({'error': f'不支持的文件格式: {file_ext}。请上传 .stl 文件'}), 400
+                    
+                    stl_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    stl_file.save(stl_path)
+                    stl_urls.append(f'/uploaded_stl/{filename}')
+                    stl_filenames.append(filename)
+
+        # Load hand landmarks data from MPS CSV (if provided)
+        hand_landmarks_data = None
+        if mps_path:
+            try:
+                hand_landmarks_data = load_hand_landmarks(mps_path)
+            except Exception as e:
+                print(f"Warning: Failed to load hand landmarks from MPS file: {e}")
+                hand_landmarks_data = None
+
+        # Return data
+        result = {
+            'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
+            'stl_files': stl_filenames,
+            'stl_urls': stl_urls,
+            'stl_file_map': stl_file_map
+        }
+        
+        # Add URDF data if available
+        if urdf_data:
+            result['urdf'] = urdf_data
+            result['urdf_filename'] = os.path.basename(urdf_path) if urdf_path else None
+
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error: {error_msg}\n{stack_trace}")
+        return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@app.route('/uploaded_stl/<filename>')
+@app.route('/gripper/uploaded_stl/<filename>')  # Also support new route format
+def uploaded_stl(filename):
+    """Serve uploaded STL files"""
+    try:
+        stl_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(filename))
+        if os.path.exists(stl_path):
+            return send_file(stl_path, mimetype='application/octet-stream')
+        else:
+            return jsonify({'error': 'STL file not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/health')

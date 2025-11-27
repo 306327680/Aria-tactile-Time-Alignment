@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Note: CSP warnings may come from browser extensions, not our code -->
+    <!-- Our code uses function-based setTimeout/setInterval, not string-based eval -->
+    <title>夹爪可视化 - Aria-Haptic Alignment Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls: 鼠标控制相机（缩放、旋转、平移） -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // 确认 OrbitControls 已挂载
+        if (typeof THREE !== 'undefined' && typeof THREE.OrbitControls !== 'undefined') {
+            console.log('✅ OrbitControls loaded successfully');
+        } else {
+            console.warn('⚠️ OrbitControls may not be available');
+        }
+    </script>
+    <!-- urdf-loaders: 轻量级 URDF 加载库 -->
+    <script src="https://unpkg.com/urdf-loader@0.12.0/umd/URDFLoader.min.js" 
+            onerror="console.warn('⚠️ urdf-loader CDN failed'); window.URDF_LOADER_ERROR = true;"></script>
+    <script>
+        // 检查 urdf-loader 是否加载成功
+        window.addEventListener('load', function() {
+            if (typeof URDFLoader !== 'undefined') {
+                console.log('✅ urdf-loader library loaded successfully');
+                window.URDF_LOADER_LOADED = true;
+            } else {
+                console.warn('⚠️ urdf-loader not loaded, using built-in parser');
+                window.URDF_LOADER_LOADED = false;
+            }
+        });
+    </script>
+    <script>
+        // STLLoader implementation for Three.js
+        class STLLoader {
+            constructor(manager) {
+                this.manager = (manager !== undefined) ? manager : THREE.DefaultLoadingManager;
+                this.path = '';
+            }
+            
+            load(url, onLoad, onProgress, onError) {
+                const scope = this;
+                const loader = new THREE.FileLoader(scope.manager);
+                loader.setPath(scope.path);
+                loader.setResponseType('arraybuffer');
+                loader.load(url, function(buffer) {
+                    try {
+                        onLoad(scope.parse(buffer));
+                    } catch (e) {
+                        if (onError) {
+                            onError(e);
+                        } else {
+                            console.error(e);
+                        }
+                        scope.manager.itemError(url);
+                    }
+                }, onProgress, onError);
+            }
+            
+            parse(data) {
+                const reader = new DataView(data);
+                const faces = reader.getUint32(80, true);
+                let r, g, b, hasColors = false;
+                let defaultR = 1, defaultG = 1, defaultB = 1;
+                
+                // Check for color header
+                for (let index = 0; index < 80 - 16; index += 4) {
+                    const end = index + 4;
+                    if (reader.getUint32(index, false) == 0x434F4C4F && reader.getUint32(end, false) == 0x52000000) {
+                        hasColors = true;
+                        defaultR = reader.getUint8(index + 4) / 255;
+                        defaultG = reader.getUint8(index + 5) / 255;
+                        defaultB = reader.getUint8(index + 6) / 255;
+                    }
+                }
+                
+                const dataOffset = 84;
+                const faceLength = 12 * 4 + 2;
+                const geometry = new THREE.BufferGeometry();
+                const vertices = [];
+                const normals = [];
+                const colors = [];
+                
+                for (let face = 0; face < faces; face++) {
+                    const start = dataOffset + face * faceLength;
+                    const normalX = reader.getFloat32(start, true);
+                    const normalY = reader.getFloat32(start + 4, true);
+                    const normalZ = reader.getFloat32(start + 8, true);
+                    
+                    if (hasColors) {
+                        const packedColor = reader.getUint16(start + 48, true);
+                        if ((packedColor & 0x8000) === 0) {
+                            r = (packedColor & 0x1F) / 31;
+                            g = ((packedColor >> 5) & 0x1F) / 31;
+                            b = ((packedColor >> 10) & 0x1F) / 31;
+                        } else {
+                            r = defaultR;
+                            g = defaultG;
+                            b = defaultB;
+                        }
+                    }
+                    
+                    for (let i = 1; i <= 3; i++) {
+                        const vertexstart = start + i * 12;
+                        vertices.push(reader.getFloat32(vertexstart, true));
+                        vertices.push(reader.getFloat32(vertexstart + 4, true));
+                        vertices.push(reader.getFloat32(vertexstart + 8, true));
+                        normals.push(normalX, normalY, normalZ);
+                        if (hasColors) {
+                            colors.push(r, g, b);
+                        }
+                    }
+                }
+                
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+                if (hasColors) {
+                    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                }
+                
+                return geometry;
+            }
+        }
+    </script>
+    <style>
+        .nav-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 6px;
+            border: 2px solid #667eea;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .nav-link:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .gripper-container {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 25px;
+        }
+
+        .upload-section {
+            margin-bottom: 25px;
+        }
+
+        .visualization-container {
+            display: block;
+            margin-top: 20px;
+        }
+
+        .view-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 600px;
+        }
+
+        .view-container h3 {
+            margin: 0 0 15px 0;
+            color: #495057;
+            font-size: 1.1rem;
+        }
+
+        #gripper-canvas {
+            width: 100%;
+            height: 600px;
+            border-radius: 6px;
+            background: #1a1a1a;
+        }
+
+        .controls-panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 8px;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+        }
+
+        .control-group input[type="number"] {
+            width: 100px;
+            padding: 6px 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+        }
+
+        .mapping-info {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+
+        .mapping-info h4 {
+            margin: 0 0 10px 0;
+            color: #1976d2;
+        }
+
+        .mapping-info ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+
+        .mapping-info li {
+            margin: 5px 0;
+            color: #1565c0;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="nav-header">
+                <h1><span>🤖</span> 夹爪可视化工具</h1>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
+                    <a href="/player" class="nav-link">
+                        <span>🎬</span>
+                        <span>数据播放器</span>
+                    </a>
+                    <a href="/" class="nav-link">
+                        <span>&larr;</span>
+                        <span>返回对齐工具</span>
+                    </a>
+                </div>
+            </div>
+            <p class="subtitle">将手部关键点映射到SO101夹爪模型并进行3D可视化</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Upload Section -->
+            <section class="upload-section">
+                <h2><span>📁</span> 上传文件</h2>
+                
+                <!-- Config File Section -->
+                <div style="margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-left: 4px solid #2196f3; border-radius: 4px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                        <div>
+                            <strong style="color: #1976d2;">💡 快速加载：</strong>
+                            <span style="color: #1565c0;">上传配置文件或使用上次保存的配置</span>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <label for="config_file" style="padding: 8px 16px; background: #2196f3; color: white; border-radius: 6px; cursor: pointer; font-size: 0.9rem;">
+                                📄 上传配置
+                                <input type="file" id="config_file" name="config_file" accept=".json" style="display: none;">
+                            </label>
+                            <button type="button" id="download-config-btn" style="padding: 8px 16px; background: #4caf50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem;">
+                                💾 下载配置
+                            </button>
+                            <button type="button" id="load-saved-config-btn" style="padding: 8px 16px; background: #ff9800; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem;">
+                                🔄 加载保存的配置
+                            </button>
+                        </div>
+                    </div>
+                    <div id="config-status" style="margin-top: 10px; font-size: 0.85rem; color: #1565c0;"></div>
+                </div>
+                
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="file-input-group">
+                        <div class="file-input-wrapper">
+                            <label for="mps_file">MPS CSV 文件（手部数据，可选）:</label>
+                            <input type="file" id="mps_file" name="mps_file" accept=".csv">
+                            <span class="file-info" id="mps-file-info">未选择文件（可仅上传夹爪模型测试显示）</span>
+                        </div>
+                        <div class="file-input-wrapper">
+                            <label for="urdf_file">URDF 文件（推荐，包含完整模型定义）:</label>
+                            <input type="file" id="urdf_file" name="urdf_file" accept=".urdf,.xml">
+                            <span class="file-info" id="urdf-file-info">未选择文件</span>
+                            <small style="color: #6c757d; display: block; margin-top: 5px;">
+                                <strong>推荐方式：</strong>上传 URDF 文件，系统会自动加载所有相关 STL 文件并正确组装<br>
+                                URDF 文件定义了各零件的相对位置、旋转和连接关系
+                            </small>
+                        </div>
+                        <div class="file-input-wrapper" style="margin-top: 15px;">
+                            <label>或手动上传 STL 文件（夹爪零件，可选）:</label>
+                            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px;">
+                                <label for="stl_folder" style="padding: 8px 16px; background: #667eea; color: white; border-radius: 6px; cursor: pointer; font-size: 0.9rem; display: inline-block;">
+                                    📁 选择文件夹（自动加载所有 STL）
+                                    <input type="file" id="stl_folder" webkitdirectory directory multiple style="display: none;" accept=".stl">
+                                </label>
+                                <label for="stl_files" style="padding: 8px 16px; background: #6c757d; color: white; border-radius: 6px; cursor: pointer; font-size: 0.9rem; display: inline-block;">
+                                    📄 手动选择文件（多选）
+                                    <input type="file" id="stl_files" name="stl_files" accept=".stl" multiple style="display: none;">
+                                </label>
+                            </div>
+                            <span class="file-info" id="stl-file-info" style="display: block; margin-top: 10px;">未选择文件（将仅显示手部关键点）</span>
+                            <div id="stl-file-list" style="margin-top: 8px; font-size: 0.9rem; color: #6c757d;"></div>
+                            <small style="color: #6c757d; display: block; margin-top: 5px;">
+                                <strong>推荐：</strong>使用"选择文件夹"按钮，可以一次性加载文件夹中的所有 STL 文件<br>
+                                <strong>手动方式：</strong>如果不使用 URDF，可以手动选择所有 STL 文件<br>
+                                • 基座/底座 (Base)<br>
+                                • 左手指 (Left Finger)<br>
+                                • 右手指 (Right Finger)<br>
+                                • 其他连接件（如有）<br>
+                                <br>
+                                <strong>文件来源：</strong><br>
+                                • URDF/STL 文件：从 <a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank">SO-ARM100 仓库</a> 下载
+                            </small>
+                        </div>
+                    </div>
+                    <div class="action-section">
+                        <button type="submit" id="loadBtn" class="btn-primary" disabled>
+                            <span class="btn-icon">📈</span>
+                            <span>加载并可视化</span>
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Loading Indicator -->
+            <div id="loadingIndicator" class="loading-indicator" style="display: none;">
+                <div class="spinner"></div>
+                <p>加载数据中...</p>
+            </div>
+
+            <!-- Visualization Section -->
+            <section id="visualizationSection" class="gripper-container" style="display: none;">
+                <h2><span>🎨</span> 3D 可视化</h2>
+                
+                <!-- Timeline Controls -->
+                <div style="margin-bottom: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 15px;">
+                        <div style="display: flex; align-items: center; gap: 15px;">
+                            <button id="play-pause-btn" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                                <span id="play-icon">▶</span> <span id="play-text">播放</span>
+                            </button>
+                            <button id="stop-btn" style="padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">
+                                ⏹ 停止
+                            </button>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label style="font-weight: 500;">速度:</label>
+                                <select id="playback-speed" style="padding: 6px 12px; border: 1px solid #dee2e6; border-radius: 4px;">
+                                    <option value="0.25">0.25x</option>
+                                    <option value="0.5">0.5x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="2">2x</option>
+                                    <option value="4">4x</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span id="current-time-display" style="font-family: monospace; font-size: 1.1rem; font-weight: 600; color: #667eea;">00:00.000</span>
+                            <span style="color: #6c757d;">/</span>
+                            <span id="total-time-display" style="font-family: monospace; font-size: 1.1rem; font-weight: 600; color: #6c757d;">00:00.000</span>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <input type="range" id="timeline-slider" min="0" max="100" value="0" step="0.1" 
+                               style="width: 100%; height: 8px; -webkit-appearance: none; background: linear-gradient(to right, #667eea 0%, #667eea 0%, #dee2e6 0%, #dee2e6 100%); border-radius: 4px; cursor: pointer;">
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #6c757d;">
+                        <span id="time-start">0.000s</span>
+                        <span id="time-end">0.000s</span>
+                    </div>
+                </div>
+                
+                <div class="visualization-container">
+                    <div class="view-container">
+                        <h3>夹爪模型 + 映射手部点</h3>
+                        <canvas id="gripper-canvas"></canvas>
+                    </div>
+                </div>
+
+                <!-- Controls Panel -->
+                <div class="controls-panel">
+                    <h3>控制参数</h3>
+                    
+                    <div class="control-group">
+                        <label>映射比例:</label>
+                        <input type="range" id="scale-slider" min="0.1" max="5" step="0.1" value="1">
+                        <span id="scale-value">1.0</span>
+                    </div>
+
+                    <div class="control-group">
+                        <label>X偏移 (m):</label>
+                        <input type="number" id="offset-x" value="0" step="0.01">
+                    </div>
+
+                    <div class="control-group">
+                        <label>Y偏移 (m):</label>
+                        <input type="number" id="offset-y" value="0" step="0.01">
+                    </div>
+
+                    <div class="control-group">
+                        <label>Z偏移 (m):</label>
+                        <input type="number" id="offset-z" value="0" step="0.01">
+                    </div>
+
+                    <div class="control-group">
+                        <label>显示手部骨架:</label>
+                        <input type="checkbox" id="show-skeleton" checked>
+                    </div>
+
+                    <div class="control-group">
+                        <label>显示夹爪模型:</label>
+                        <input type="checkbox" id="show-gripper" checked>
+                    </div>
+
+                    <button id="apply-settings" class="btn-primary" style="margin-top: 15px;">
+                        应用设置
+                    </button>
+                </div>
+
+                <!-- Mapping Info -->
+                <div class="mapping-info">
+                    <h4>映射说明</h4>
+                    <ul>
+                        <li>拇指尖 (landmark 4) → 夹爪左指</li>
+                        <li>食指尖 (landmark 8) → 夹爪右指</li>
+                        <li>手腕 (landmark 5) → 夹爪基座</li>
+                        <li>其他关键点按比例映射到夹爪相应位置</li>
+                    </ul>
+                </div>
+            </section>
+
+            <!-- Error Display -->
+            <div id="errorSection" class="error-section" style="display: none;">
+                <h3><span>❌</span> 错误</h3>
+                <div id="errorMessage"></div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Aria-Haptic Alignment Tool | Powered by Flask & Three.js</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
+    <!-- Gripper visualization (non-module for THREE.js compatibility) -->
+    <script src="{{ url_for('static', filename='js/gripper/gripper.js') }}?v=16"></script>
+</body>
+</html>
+
