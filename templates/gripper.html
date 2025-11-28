@@ -574,9 +574,19 @@
                             <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
                                 <span style="font-size: 0.7rem; color: #666;">解算:</span>
                                 <select id="ik-solver-method" style="padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.7rem; background: white;">
-                                    <option value="least_squares">最小二乘 (默认)</option>
-                                    <option value="scalar">标量优化</option>
-                                    <option value="CCD">CCD (快速迭代)</option>
+                                    <optgroup label="ikpy 内置">
+                                        <option value="least_squares">最小二乘 (精确)</option>
+                                        <option value="scalar">标量优化</option>
+                                    </optgroup>
+                                    <optgroup label="雅可比方法">
+                                        <option value="jacobian_pinv">J伪逆 (DLS)</option>
+                                        <option value="jacobian_transpose">J转置 (快速)</option>
+                                    </optgroup>
+                                    <optgroup label="迭代方法">
+                                        <option value="CCD">CCD (逐关节)</option>
+                                        <option value="fabrik">FABRIK (位置)</option>
+                                        <option value="gradient_descent">梯度下降</option>
+                                    </optgroup>
                                 </select>
                                 <span style="font-size: 0.7rem; color: #666;">迭代:</span>
                                 <input type="number" id="ik-max-iter" value="100" min="10" max="1000" step="10" style="width: 50px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.7rem;" title="最大迭代次数">

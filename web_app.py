@@ -1184,7 +1184,226 @@ def load_ik_chain(urdf_path: str, base_link: str = "base_link", end_link: str = 
     return ik_chain
 
 
-def ccd_ik(chain, target_position, initial_angles=None, max_iter=100, tolerance=1e-4):
+def compute_jacobian(chain, angles, active_indices, delta=1e-6):
+    """Compute numerical Jacobian matrix for the chain."""
+    fk = chain.forward_kinematics(angles)
+    end_pos = fk[:3, 3]
+
+    n_active = len(active_indices)
+    jacobian = np.zeros((3, n_active))
+
+    for j, idx in enumerate(active_indices):
+        angles_plus = angles.copy()
+        angles_plus[idx] += delta
+        fk_plus = chain.forward_kinematics(angles_plus)
+        pos_plus = fk_plus[:3, 3]
+        jacobian[:, j] = (pos_plus - end_pos) / delta
+
+    return jacobian
+
+
+def jacobian_transpose_ik(chain, target_position, active_indices, initial_angles=None,
+                          max_iter=100, tolerance=1e-4, alpha=0.1):
+    """
+    Jacobian Transpose IK solver.
+    Simple and fast, good for real-time applications.
+    Uses J^T * error instead of inverting the Jacobian.
+    """
+    if initial_angles is None:
+        angles = np.zeros(len(chain.links))
+    else:
+        angles = initial_angles.copy()
+
+    for iteration in range(max_iter):
+        fk = chain.forward_kinematics(angles)
+        end_pos = fk[:3, 3]
+        error = target_position - end_pos
+        error_norm = np.linalg.norm(error)
+
+        if error_norm < tolerance:
+            break
+
+        # Compute Jacobian
+        J = compute_jacobian(chain, angles, active_indices)
+
+        # Jacobian transpose method: delta_theta = alpha * J^T * error
+        delta_theta = alpha * J.T @ error
+
+        # Apply to active joints
+        for j, idx in enumerate(active_indices):
+            angles[idx] += delta_theta[j]
+
+    return angles
+
+
+def jacobian_pseudoinverse_ik(chain, target_position, active_indices, initial_angles=None,
+                               max_iter=100, tolerance=1e-4, damping=0.01):
+    """
+    Jacobian Pseudoinverse (Damped Least Squares / Levenberg-Marquardt) IK solver.
+    More accurate than transpose, handles singularities better.
+    """
+    if initial_angles is None:
+        angles = np.zeros(len(chain.links))
+    else:
+        angles = initial_angles.copy()
+
+    for iteration in range(max_iter):
+        fk = chain.forward_kinematics(angles)
+        end_pos = fk[:3, 3]
+        error = target_position - end_pos
+        error_norm = np.linalg.norm(error)
+
+        if error_norm < tolerance:
+            break
+
+        # Compute Jacobian
+        J = compute_jacobian(chain, angles, active_indices)
+
+        # Damped pseudoinverse: (J^T * J + lambda^2 * I)^-1 * J^T
+        # Or equivalently: J^T * (J * J^T + lambda^2 * I)^-1
+        JJT = J @ J.T
+        damped = JJT + damping**2 * np.eye(3)
+
+        try:
+            delta_theta = J.T @ np.linalg.solve(damped, error)
+        except np.linalg.LinAlgError:
+            # Fallback to pseudoinverse if solve fails
+            delta_theta = np.linalg.pinv(J) @ error
+
+        # Apply to active joints
+        for j, idx in enumerate(active_indices):
+            angles[idx] += delta_theta[j]
+
+    return angles
+
+
+def fabrik_ik(chain, target_position, active_indices, initial_angles=None,
+              max_iter=100, tolerance=1e-4):
+    """
+    FABRIK (Forward And Backward Reaching Inverse Kinematics) solver.
+    Very fast and intuitive, works by iteratively adjusting joint positions.
+    """
+    if initial_angles is None:
+        angles = np.zeros(len(chain.links))
+    else:
+        angles = initial_angles.copy()
+
+    # Get link lengths from chain
+    n_links = len(active_indices)
+    if n_links < 2:
+        return angles
+
+    # Compute initial joint positions
+    def get_joint_positions(angles):
+        positions = []
+        for i in range(len(chain.links)):
+            partial_angles = angles.copy()
+            for j in range(i + 1, len(chain.links)):
+                partial_angles[j] = 0
+            fk = chain.forward_kinematics(partial_angles)
+            positions.append(fk[:3, 3].copy())
+        return positions
+
+    # Get base position (fixed)
+    base_pos = np.array([0, 0, 0])
+    fk_base = chain.forward_kinematics(np.zeros(len(chain.links)))
+    base_pos = fk_base[:3, 3].copy()
+
+    for iteration in range(max_iter):
+        fk = chain.forward_kinematics(angles)
+        end_pos = fk[:3, 3]
+        error = np.linalg.norm(target_position - end_pos)
+
+        if error < tolerance:
+            break
+
+        # Get current joint positions
+        positions = get_joint_positions(angles)
+
+        # Backward reaching: move end effector to target
+        positions[-1] = target_position.copy()
+        for i in range(len(positions) - 2, -1, -1):
+            direction = positions[i] - positions[i + 1]
+            dist = np.linalg.norm(direction)
+            if dist > 1e-6:
+                # Estimate link length from current config
+                link_len = np.linalg.norm(positions[i + 1] - positions[i]) if i < len(positions) - 1 else 0.05
+                direction = direction / dist * link_len
+            positions[i] = positions[i + 1] + direction
+
+        # Forward reaching: fix base position
+        positions[0] = base_pos.copy()
+        for i in range(1, len(positions)):
+            direction = positions[i] - positions[i - 1]
+            dist = np.linalg.norm(direction)
+            if dist > 1e-6:
+                link_len = np.linalg.norm(positions[i] - positions[i - 1])
+                if link_len < 1e-6:
+                    link_len = 0.05
+                direction = direction / dist * link_len
+            positions[i] = positions[i - 1] + direction
+
+        # Convert positions back to joint angles (approximate)
+        # This is a simplified conversion
+        for j, idx in enumerate(active_indices):
+            if j < len(positions) - 1:
+                # Compute angle from position change
+                current_fk = chain.forward_kinematics(angles)
+                current_pos = current_fk[:3, 3]
+                target_dir = positions[-1] - current_pos
+                if np.linalg.norm(target_dir) > 1e-6:
+                    angles[idx] += 0.1 * np.arctan2(target_dir[1], target_dir[0])
+
+    return angles
+
+
+def gradient_descent_ik(chain, target_position, active_indices, initial_angles=None,
+                        max_iter=100, tolerance=1e-4, learning_rate=0.5):
+    """
+    Gradient Descent IK solver.
+    Simple optimization approach, minimizes position error directly.
+    """
+    if initial_angles is None:
+        angles = np.zeros(len(chain.links))
+    else:
+        angles = initial_angles.copy()
+
+    for iteration in range(max_iter):
+        fk = chain.forward_kinematics(angles)
+        end_pos = fk[:3, 3]
+        error = target_position - end_pos
+        error_norm = np.linalg.norm(error)
+
+        if error_norm < tolerance:
+            break
+
+        # Compute gradient numerically
+        delta = 1e-6
+        gradient = np.zeros(len(active_indices))
+
+        for j, idx in enumerate(active_indices):
+            angles_plus = angles.copy()
+            angles_plus[idx] += delta
+            fk_plus = chain.forward_kinematics(angles_plus)
+            pos_plus = fk_plus[:3, 3]
+            error_plus = np.linalg.norm(target_position - pos_plus)
+
+            angles_minus = angles.copy()
+            angles_minus[idx] -= delta
+            fk_minus = chain.forward_kinematics(angles_minus)
+            pos_minus = fk_minus[:3, 3]
+            error_minus = np.linalg.norm(target_position - pos_minus)
+
+            gradient[j] = (error_plus - error_minus) / (2 * delta)
+
+        # Update angles
+        for j, idx in enumerate(active_indices):
+            angles[idx] -= learning_rate * gradient[j]
+
+    return angles
+
+
+def ccd_ik(chain, target_position, active_indices=None, initial_angles=None, max_iter=100, tolerance=1e-4):
     """
     Cyclic Coordinate Descent (CCD) IK solver.
     Fast iterative method that adjusts one joint at a time.
@@ -1315,36 +1534,81 @@ def compute_ik():
                 initial_angles[idx] = angle
 
         # Compute IK with selected solver
-        # ikpy only supports: "least_squares" (default) and "scalar"
         solver_used = solver_method
-        if solver_method not in ['least_squares', 'scalar', 'CCD']:
-            solver_method = 'least_squares'  # fallback to default
+        custom_solvers = ['CCD', 'jacobian_transpose', 'jacobian_pinv', 'fabrik', 'gradient_descent']
+        ikpy_solvers = ['least_squares', 'scalar']
 
-        if solver_method == 'CCD':
-            # Use custom CCD solver
-            result_angles = ccd_ik(
-                ik_chain,
-                target_position,
-                initial_angles=initial_angles,
-                max_iter=max_iter
-            )
-        elif target_orientation is not None:
-            target_frame = np.eye(4)
-            target_frame[:3, :3] = target_orientation
-            target_frame[:3, 3] = target_position
-            result_angles = ik_chain.inverse_kinematics(
-                target_frame,
-                initial_position=initial_angles,
-                orientation_mode="all",
-                optimizer=solver_method,
-                max_iter=max_iter
-            )
+        if solver_method in custom_solvers:
+            # Use custom IK solvers
+            if solver_method == 'CCD':
+                result_angles = ccd_ik(
+                    ik_chain,
+                    target_position,
+                    active_indices=ik_active_indices,
+                    initial_angles=initial_angles,
+                    max_iter=max_iter
+                )
+            elif solver_method == 'jacobian_transpose':
+                result_angles = jacobian_transpose_ik(
+                    ik_chain,
+                    target_position,
+                    ik_active_indices,
+                    initial_angles=initial_angles,
+                    max_iter=max_iter
+                )
+            elif solver_method == 'jacobian_pinv':
+                result_angles = jacobian_pseudoinverse_ik(
+                    ik_chain,
+                    target_position,
+                    ik_active_indices,
+                    initial_angles=initial_angles,
+                    max_iter=max_iter
+                )
+            elif solver_method == 'fabrik':
+                result_angles = fabrik_ik(
+                    ik_chain,
+                    target_position,
+                    ik_active_indices,
+                    initial_angles=initial_angles,
+                    max_iter=max_iter
+                )
+            elif solver_method == 'gradient_descent':
+                result_angles = gradient_descent_ik(
+                    ik_chain,
+                    target_position,
+                    ik_active_indices,
+                    initial_angles=initial_angles,
+                    max_iter=max_iter
+                )
+        elif solver_method in ikpy_solvers:
+            # Use ikpy built-in solvers
+            if target_orientation is not None:
+                target_frame = np.eye(4)
+                target_frame[:3, :3] = target_orientation
+                target_frame[:3, 3] = target_position
+                result_angles = ik_chain.inverse_kinematics(
+                    target_frame,
+                    initial_position=initial_angles,
+                    orientation_mode="all",
+                    optimizer=solver_method,
+                    max_iter=max_iter
+                )
+            else:
+                result_angles = ik_chain.inverse_kinematics(
+                    target_position,
+                    initial_position=initial_angles,
+                    orientation_mode=None,
+                    optimizer=solver_method,
+                    max_iter=max_iter
+                )
         else:
+            # Fallback to default
+            solver_used = 'least_squares'
             result_angles = ik_chain.inverse_kinematics(
                 target_position,
                 initial_position=initial_angles,
                 orientation_mode=None,
-                optimizer=solver_method,
+                optimizer='least_squares',
                 max_iter=max_iter
             )
 
