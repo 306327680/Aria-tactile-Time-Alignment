@@ -859,10 +859,10 @@ async function loadManoModel() {
 
     manoLoadingPromise = (async () => {
     try {
-        // 并行加载OBJ和JSON
+        // 并行加载OBJ和JSON（使用拟合后的模型）
         const [objResponse, jsonResponse] = await Promise.all([
-            fetch('/static/models/mano_right.obj'),
-            fetch('/static/models/mano_right.json')
+            fetch('/static/models/mano_right_fitted.obj'),
+            fetch('/static/models/mano_right_fitted.json')
         ]);
 
         if (!objResponse.ok || !jsonResponse.ok) {
