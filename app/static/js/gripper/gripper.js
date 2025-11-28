@@ -1440,6 +1440,74 @@ function applyLBSDeformation(landmarks, scale, inverseQuat, wristPos) {
             (euler.y * 180/Math.PI).toFixed(1),
             (euler.z * 180/Math.PI).toFixed(1)
         );
+
+        // 比较 MANO 和 MPS 各手指的比例
+        console.log('=== Finger Length Ratio Analysis ===');
+
+        // 计算距离的辅助函数
+        const dist = (p1, p2) => Math.sqrt(
+            Math.pow(p1[0]-p2[0], 2) + Math.pow(p1[1]-p2[1], 2) + Math.pow(p1[2]-p2[2], 2)
+        );
+        const dist3 = (v1, v2) => Math.sqrt(
+            Math.pow(v1.x-v2.x, 2) + Math.pow(v1.y-v2.y, 2) + Math.pow(v1.z-v2.z, 2)
+        );
+
+        // MANO 手腕到各 MCP 的距离
+        const manoWristToIndex = dist(restJoints[0], restJoints[1]);
+        const manoWristToMiddle = dist(restJoints[0], restJoints[4]);
+        const manoWristToRing = dist(restJoints[0], restJoints[7]);
+        const manoWristToPinky = dist(restJoints[0], restJoints[10]);
+        const manoWristToThumb = dist(restJoints[0], restJoints[13]);
+
+        // MPS 手腕到各 MCP 的距离
+        const mpsWrist = landmarks[5];
+        const mpsWristToIndex = dist(mpsWrist, landmarks[8]);
+        const mpsWristToMiddle = dist(mpsWrist, landmarks[11]);
+        const mpsWristToRing = dist(mpsWrist, landmarks[14]);
+        const mpsWristToPinky = dist(mpsWrist, landmarks[17]);
+        const mpsWristToThumb = dist(mpsWrist, landmarks[6]);
+
+        // 以 index 为基准，计算各手指的相对比例
+        console.log('Wrist to MCP ratios (relative to index):');
+        console.log('  MANO - index:1.00, middle:', (manoWristToMiddle/manoWristToIndex).toFixed(3),
+            ', ring:', (manoWristToRing/manoWristToIndex).toFixed(3),
+            ', pinky:', (manoWristToPinky/manoWristToIndex).toFixed(3),
+            ', thumb:', (manoWristToThumb/manoWristToIndex).toFixed(3));
+        console.log('  MPS  - index:1.00, middle:', (mpsWristToMiddle/mpsWristToIndex).toFixed(3),
+            ', ring:', (mpsWristToRing/mpsWristToIndex).toFixed(3),
+            ', pinky:', (mpsWristToPinky/mpsWristToIndex).toFixed(3),
+            ', thumb:', (mpsWristToThumb/mpsWristToIndex).toFixed(3));
+
+        // 计算各手指总长度 (MCP to TIP)
+        // MANO: MCP -> PIP -> DIP (没有 TIP，用 DIP 近似)
+        const manoIndexLen = dist(restJoints[1], restJoints[2]) + dist(restJoints[2], restJoints[3]);
+        const manoMiddleLen = dist(restJoints[4], restJoints[5]) + dist(restJoints[5], restJoints[6]);
+        const manoRingLen = dist(restJoints[7], restJoints[8]) + dist(restJoints[8], restJoints[9]);
+        const manoPinkyLen = dist(restJoints[10], restJoints[11]) + dist(restJoints[11], restJoints[12]);
+        const manoThumbLen = dist(restJoints[13], restJoints[14]) + dist(restJoints[14], restJoints[15]);
+
+        // MPS: MCP -> PIP -> DIP -> TIP
+        const mpsIndexLen = dist(landmarks[8], landmarks[9]) + dist(landmarks[9], landmarks[10]) + dist(landmarks[10], landmarks[1]);
+        const mpsMiddleLen = dist(landmarks[11], landmarks[12]) + dist(landmarks[12], landmarks[13]) + dist(landmarks[13], landmarks[2]);
+        const mpsRingLen = dist(landmarks[14], landmarks[15]) + dist(landmarks[15], landmarks[16]) + dist(landmarks[16], landmarks[3]);
+        const mpsPinkyLen = dist(landmarks[17], landmarks[18]) + dist(landmarks[18], landmarks[19]) + dist(landmarks[19], landmarks[4]);
+        const mpsThumbLen = dist(landmarks[6], landmarks[7]) + dist(landmarks[7], landmarks[0]);
+
+        console.log('Finger length ratios (relative to index):');
+        console.log('  MANO - index:1.00, middle:', (manoMiddleLen/manoIndexLen).toFixed(3),
+            ', ring:', (manoRingLen/manoIndexLen).toFixed(3),
+            ', pinky:', (manoPinkyLen/manoIndexLen).toFixed(3),
+            ', thumb:', (manoThumbLen/manoIndexLen).toFixed(3));
+        console.log('  MPS  - index:1.00, middle:', (mpsMiddleLen/mpsIndexLen).toFixed(3),
+            ', ring:', (mpsRingLen/mpsIndexLen).toFixed(3),
+            ', pinky:', (mpsPinkyLen/mpsIndexLen).toFixed(3),
+            ', thumb:', (mpsThumbLen/mpsIndexLen).toFixed(3));
+
+        // 直接比较 MANO vs MPS 的大拇指比例差异
+        const manoThumbRatio = manoThumbLen / manoIndexLen;
+        const mpsThumbRatio = mpsThumbLen / mpsIndexLen;
+        console.log('Thumb ratio difference: MANO=' + manoThumbRatio.toFixed(3) + ', MPS=' + mpsThumbRatio.toFixed(3) +
+            ', diff=' + ((manoThumbRatio - mpsThumbRatio) * 100).toFixed(1) + '%');
     }
 
     // 获取原始顶点
@@ -3341,6 +3409,23 @@ if (playbackSpeedSelect) {
         }
     });
 }
+
+// 空格键控制播放/暂停
+document.addEventListener('keydown', function(e) {
+    // 如果焦点在输入框内，不响应空格键
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        return;
+    }
+
+    if (e.code === 'Space') {
+        e.preventDefault();  // 防止页面滚动
+        if (isPlaying) {
+            pausePlayback();
+        } else {
+            startPlayback();
+        }
+    }
+});
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {

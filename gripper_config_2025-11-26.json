@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "mps_filename": "hand_tracking_results.csv",
+  "urdf_filename": "so101_new_calib.urdf",
+  "stl_filenames": [
+    "Base_motor_holder_SO101.stl",
+    "Base_SO101.stl",
+    "Handle_SO101.stl",
+    "Motor_holder_SO101_Base.stl",
+    "Motor_holder_SO101_Wrist.stl",
+    "Moving_Jaw_SO101.stl",
+    "Rotation_Pitch_SO101.stl",
+    "Seeedstudio_Mounting_Plate_SO101.stl",
+    "SO101 Assembly.stl",
+    "Trigger_SO101.stl",
+    "Under_arm_SO101.stl",
+    "Upper_arm_SO101.stl",
+    "WaveShare_Mounting_Plate_SO101.stl",
+    "Wrist_Roll_Follower_SO101.stl",
+    "Wrist_Roll_Pitch_SO101.stl",
+    "Wrist_Roll_SO101.stl"
+  ],
+  "mapping_settings": {
+    "scale": 1,
+    "offsetX": 0,
+    "offsetY": 0,
+    "offsetZ": 0,
+    "showSkeleton": true,
+    "showGripper": true
+  },
+  "timestamp": "2025-11-26T07:56:57.923Z",
+  "note": "将此文件保存，下次可以直接上传此配置文件快速加载"
+}
