@@ -1962,6 +1962,13 @@ function renderGripperScene() {
             }
         }
         
+        // Update haptic colors even without hand data (use haptic timestamps)
+        if (hapticData && hapticTimestamps.length > 0) {
+            const hapticFrameIndex = Math.floor(currentFrameIndex) % hapticTimestamps.length;
+            const currentTime = hapticTimestamps[hapticFrameIndex] || 0;
+            updateManoHapticColors(currentTime);
+        }
+
         // Scene will render with grid, axes, and gripper models (if any)
         return;
     }
@@ -2072,9 +2079,15 @@ function renderGripperScene() {
     renderHandVisualization(gripperScene, mapped.landmarks, true);
 
     // Update haptic colors on MANO mesh if haptic data is available
-    if (hapticData && handTimestamps.length > 0) {
-        const currentTime = handTimestamps[frameIndex] || 0;
-        updateManoHapticColors(currentTime);
+    if (hapticData) {
+        // Use hand timestamps if available, otherwise use haptic timestamps
+        const timestamps = handTimestamps.length > 0 ? handTimestamps : hapticTimestamps;
+        if (timestamps.length > 0) {
+            const currentTime = timestamps[Math.min(frameIndex, timestamps.length - 1)] || 0;
+            updateManoHapticColors(currentTime);
+        }
+    } else if (frameIndex % 100 === 0) {
+        console.log('renderGripperScene: hapticData is null/undefined');
     }
 }
 
@@ -2614,9 +2627,14 @@ if (!uploadForm) {
 
             // Append haptic file if provided
             const hapticFileInput = document.getElementById('haptic_file');
+            console.log('Haptic file input element:', hapticFileInput);
+            console.log('Haptic file input files:', hapticFileInput?.files);
+            console.log('Haptic file input files length:', hapticFileInput?.files?.length);
             if (hapticFileInput && hapticFileInput.files && hapticFileInput.files.length > 0) {
                 formData.append('haptic_file', hapticFileInput.files[0]);
-                console.log('Haptic file:', hapticFileInput.files[0].name);
+                console.log('Haptic file added to formData:', hapticFileInput.files[0].name);
+            } else {
+                console.log('No haptic file selected');
             }
 
             // Append URDF file if provided
@@ -2717,10 +2735,48 @@ if (!uploadForm) {
                 console.log('No gripper files provided, using hand landmarks only');
             }
 
+            // Load MANO model if haptic data is available (for haptic visualization)
+            if (hapticData) {
+                try {
+                    console.log('Loading MANO model for haptic visualization...');
+                    const mesh = await loadManoModel();
+                    if (mesh && gripperScene) {
+                        // 初始化顶点颜色（用于触觉可视化）
+                        const numVerts = mesh.geometry.attributes.position.count;
+                        const colors = new Float32Array(numVerts * 3);
+                        // 初始为肤色 (0xffdbac -> r:1, g:0.858, b:0.674)
+                        for (let i = 0; i < numVerts; i++) {
+                            colors[i * 3] = 0.82;
+                            colors[i * 3 + 1] = 0.64;
+                            colors[i * 3 + 2] = 0.49;
+                        }
+                        mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+                        // 使用 PhongMaterial 支持顶点颜色
+                        mesh.material = new THREE.MeshPhongMaterial({
+                            color: 0xffffff,
+                            vertexColors: true,
+                            shininess: 30,
+                            side: THREE.DoubleSide
+                        });
+
+                        // 添加到场景
+                        if (!mesh.parent) {
+                            mesh.position.set(0, 0.05, 0);
+                            gripperScene.add(mesh);
+                            console.log('MANO model added to scene for haptic visualization');
+                        }
+                    }
+                    console.log('MANO model loaded for haptic visualization');
+                } catch (e) {
+                    console.warn('Failed to load MANO model for haptic visualization:', e);
+                }
+            }
+
             // Start animation
             currentFrameIndex = 0;
             updateTimeline();
-            
+
             // Adjust camera to first frame's landmarks (if available)
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
                 const firstFrameLandmarks = handLandmarksData.right_hand[0];
@@ -3691,6 +3747,9 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     console.log('Hand view mode toggle initialized');
 
+    // Initialize haptic controls
+    initHapticControls();
+
     console.log('Gripper visualization initialized');
 });
 
@@ -4158,17 +4217,16 @@ async function debugTestManoBasicMaterial() {
     const colors = new Float32Array(numVerts * 3);
     // 初始为肤色 (0xffdbac -> r:1, g:0.858, b:0.674)
     for (let i = 0; i < numVerts; i++) {
-        colors[i * 3] = 1.0;
-        colors[i * 3 + 1] = 0.858;
-        colors[i * 3 + 2] = 0.674;
+        colors[i * 3] = 0.82;
+        colors[i * 3 + 1] = 0.64;
+        colors[i * 3 + 2] = 0.49;
     }
     manoMesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    // 使用 PhongMaterial 支持顶点颜色（用于触觉可视化）
-    manoMesh.material = new THREE.MeshPhongMaterial({
+    // 使用 LambertMaterial 漫反射材质，无高光，颜色更清晰
+    manoMesh.material = new THREE.MeshLambertMaterial({
         color: 0xffffff,  // 白色基础，让顶点颜色显示
         vertexColors: true,  // 启用顶点颜色
-        shininess: 30,
         side: THREE.DoubleSide
     });
 
@@ -4429,17 +4487,100 @@ window.reloadManoModel = reloadManoModel;
 
 // ========== 触觉数据可视化 ==========
 
-// MANO 指尖顶点索引 (来自 HOT3D)
+// MANO 指尖顶点索引 (来自 HOT3D，但 thumb 调整为 745 因为 744 在当前模型中不存在)
 const MANO_FINGERTIP_VERT_INDICES = {
-    thumb: 744,
+    thumb: 745,  // 原为 744，但该模型中不存在，使用 745 代替
     index: 320,
     middle: 443,
     ring: 554,
     pinky: 671
 };
 
-// 每个指尖影响的顶点范围（近似值，需要根据实际权重调整）
-const FINGERTIP_INFLUENCE_RADIUS = 0.015;  // 15mm 影响半径
+// 触觉可视化参数（可通过前端控制）
+let hapticSettings = {
+    enabled: true,
+    radius: 0.05,      // 影响半径（米）
+    forceMin: 0,       // 力值映射下限
+    forceMax: 10,      // 力值映射上限（默认10N）
+    timeOffset: 0      // 时间偏移（秒），正值表示触觉数据延后
+};
+
+// 初始化触觉控制面板
+function initHapticControls() {
+    const enabledCheckbox = document.getElementById('haptic-enabled');
+    const radiusSlider = document.getElementById('haptic-radius');
+    const radiusValue = document.getElementById('haptic-radius-value');
+    const forceMinSlider = document.getElementById('haptic-force-min');
+    const forceMinValue = document.getElementById('haptic-force-min-value');
+    const forceMaxSlider = document.getElementById('haptic-force-max');
+    const forceMaxValue = document.getElementById('haptic-force-max-value');
+
+    if (enabledCheckbox) {
+        enabledCheckbox.addEventListener('change', (e) => {
+            hapticSettings.enabled = e.target.checked;
+            if (!hapticSettings.enabled) {
+                resetManoColors();
+            }
+        });
+    }
+
+    if (radiusSlider) {
+        radiusSlider.addEventListener('input', (e) => {
+            const mm = parseInt(e.target.value);
+            hapticSettings.radius = mm / 1000;  // 转换为米
+            if (radiusValue) radiusValue.textContent = mm + 'mm';
+        });
+    }
+
+    if (forceMinSlider) {
+        forceMinSlider.addEventListener('input', (e) => {
+            hapticSettings.forceMin = parseFloat(e.target.value);
+            if (forceMinValue) forceMinValue.textContent = hapticSettings.forceMin + 'N';
+            // 确保 min < max
+            if (hapticSettings.forceMin >= hapticSettings.forceMax) {
+                hapticSettings.forceMax = hapticSettings.forceMin + 1;
+                if (forceMaxSlider) forceMaxSlider.value = hapticSettings.forceMax;
+                if (forceMaxValue) forceMaxValue.textContent = hapticSettings.forceMax + 'N';
+            }
+        });
+    }
+
+    if (forceMaxSlider) {
+        forceMaxSlider.addEventListener('input', (e) => {
+            hapticSettings.forceMax = parseFloat(e.target.value);
+            if (forceMaxValue) forceMaxValue.textContent = hapticSettings.forceMax + 'N';
+            // 确保 max > min
+            if (hapticSettings.forceMax <= hapticSettings.forceMin) {
+                hapticSettings.forceMin = Math.max(0, hapticSettings.forceMax - 1);
+                if (forceMinSlider) forceMinSlider.value = hapticSettings.forceMin;
+                if (forceMinValue) forceMinValue.textContent = hapticSettings.forceMin + 'N';
+            }
+        });
+    }
+
+    // 时间偏移控制
+    const timeOffsetInput = document.getElementById('haptic-time-offset');
+    if (timeOffsetInput) {
+        timeOffsetInput.addEventListener('change', (e) => {
+            hapticSettings.timeOffset = parseFloat(e.target.value) || 0;
+            console.log('Haptic time offset:', hapticSettings.timeOffset, 's');
+        });
+    }
+
+    console.log('Haptic controls initialized');
+}
+
+// 更新当前力值显示
+function updateHapticForceDisplay(hapticValues) {
+    const forceDisplay = document.getElementById('haptic-current-force');
+    if (!forceDisplay || !hapticValues) return;
+
+    const forces = [];
+    if (hapticValues.thumb !== undefined) forces.push(`拇:${hapticValues.thumb.toFixed(1)}`);
+    if (hapticValues.index !== undefined) forces.push(`食:${hapticValues.index.toFixed(1)}`);
+
+    forceDisplay.textContent = forces.length > 0 ? forces.join(' ') : '--';
+}
 
 /**
  * 根据力值获取颜色 (绿色->黄色->红色)
@@ -4472,12 +4613,16 @@ function getHapticValueAtTime(currentTime) {
         return null;
     }
 
+    // 应用时间偏移：正值表示触觉数据相对于手部数据延后
+    // 所以查询时需要用 currentTime - offset
+    const adjustedTime = currentTime - hapticSettings.timeOffset;
+
     // 找到最近的时间戳索引
     let nearestIdx = 0;
-    let minDiff = Math.abs(hapticData.timestamps[0] - currentTime);
+    let minDiff = Math.abs(hapticData.timestamps[0] - adjustedTime);
 
     for (let i = 1; i < hapticData.timestamps.length; i++) {
-        const diff = Math.abs(hapticData.timestamps[i] - currentTime);
+        const diff = Math.abs(hapticData.timestamps[i] - adjustedTime);
         if (diff < minDiff) {
             minDiff = diff;
             nearestIdx = i;
@@ -4498,11 +4643,27 @@ function getHapticValueAtTime(currentTime) {
 /**
  * 更新 MANO mesh 的顶点颜色以反映触觉数据
  */
+let hapticDebugCounter = 0;
 function updateManoHapticColors(currentTime) {
-    if (!manoMesh || !hapticData) return;
+    // 检查是否启用
+    if (!hapticSettings.enabled) {
+        return;
+    }
+
+    if (!manoMesh || !hapticData) {
+        if (hapticDebugCounter++ < 5) {
+            console.log('updateManoHapticColors: missing manoMesh or hapticData', {manoMesh: !!manoMesh, hapticData: !!hapticData});
+        }
+        return;
+    }
 
     const geometry = manoMesh.geometry;
-    if (!geometry.attributes.color) return;
+    if (!geometry.attributes.color) {
+        if (hapticDebugCounter++ < 5) {
+            console.log('updateManoHapticColors: no color attribute on geometry');
+        }
+        return;
+    }
 
     const colors = geometry.attributes.color;
     const positions = geometry.attributes.position;
@@ -4510,7 +4671,26 @@ function updateManoHapticColors(currentTime) {
 
     // 获取当前时间的触觉值
     const hapticValues = getHapticValueAtTime(currentTime);
-    if (!hapticValues) return;
+    if (!hapticValues) {
+        if (hapticDebugCounter++ < 5) {
+            console.log('updateManoHapticColors: no haptic values at time', currentTime);
+        }
+        return;
+    }
+
+    // 更新力值显示
+    updateHapticForceDisplay(hapticValues);
+
+    // 调试输出（只输出前几次）
+    if (hapticDebugCounter++ < 10) {
+        console.log('updateManoHapticColors:', {
+            currentTime,
+            hapticValues,
+            numVerts,
+            forceRange: hapticData.force_range,
+            settings: hapticSettings
+        });
+    }
 
     // 计算力的范围用于归一化
     const forceRange = hapticData.force_range || [0, 100];
@@ -4518,18 +4698,69 @@ function updateManoHapticColors(currentTime) {
     const forceMax = Math.max(forceRange[1], forceMin + 1);
 
     // 获取指尖顶点位置
+    // 注意：MANO_FINGERTIP_VERT_INDICES 是原始778顶点的索引
+    // OBJ加载后顶点被展开成4614个，需要使用 vertexMapping 找到对应的展开顶点
+    // 使用当前变形后的顶点位置（不是原始T-pose位置）
     const fingertipPositions = {};
-    for (const [finger, vertIdx] of Object.entries(MANO_FINGERTIP_VERT_INDICES)) {
-        if (vertIdx < numVerts) {
-            fingertipPositions[finger] = new THREE.Vector3(
-                positions.array[vertIdx * 3],
-                positions.array[vertIdx * 3 + 1],
-                positions.array[vertIdx * 3 + 2]
-            );
+    const vertexMapping = manoMesh.userData.vertexMapping;
+
+    for (const [finger, origVertIdx] of Object.entries(MANO_FINGERTIP_VERT_INDICES)) {
+        // 找到映射到该原始顶点的展开顶点，使用当前变形后的位置
+        if (vertexMapping) {
+            for (let i = 0; i < numVerts; i++) {
+                if (vertexMapping[i] === origVertIdx) {
+                    fingertipPositions[finger] = new THREE.Vector3(
+                        positions.array[i * 3],
+                        positions.array[i * 3 + 1],
+                        positions.array[i * 3 + 2]
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // 调试输出指尖位置（只输出前几次）
+    if (hapticDebugCounter < 10) {
+        console.log('=== Haptic Debug ===');
+        console.log('Fingertip positions found:', Object.keys(fingertipPositions));
+        console.log('thumb position:', fingertipPositions.thumb);
+        console.log('index position:', fingertipPositions.index);
+        console.log('hapticValues:', hapticValues);
+        console.log('vertexMapping available:', !!vertexMapping);
+        if (!fingertipPositions.thumb) {
+            console.warn('WARNING: thumb position not found! Checking vertexMapping...');
+            // 找出 vertexMapping 中的最大索引和索引分布
+            let maxIdx = 0;
+            const indexCounts = {};
+            for (let i = 0; i < numVerts; i++) {
+                if (vertexMapping) {
+                    const idx = vertexMapping[i];
+                    if (idx > maxIdx) maxIdx = idx;
+                    // 统计 740-778 范围内的索引（大拇指区域）
+                    if (idx >= 740 && idx <= 778) {
+                        indexCounts[idx] = (indexCounts[idx] || 0) + 1;
+                    }
+                }
+            }
+            console.log('vertexMapping max index:', maxIdx);
+            console.log('Indices in range 740-778:', indexCounts);
+            console.log('Looking for thumb tip alternatives near 744...');
+
+            // 尝试找到740-750范围内的顶点作为备选
+            for (let targetIdx = 740; targetIdx <= 750; targetIdx++) {
+                for (let i = 0; i < numVerts; i++) {
+                    if (vertexMapping && vertexMapping[i] === targetIdx) {
+                        console.log(`Found vertex ${targetIdx} at expanded index ${i}`);
+                        break;
+                    }
+                }
+            }
         }
     }
 
     // 遍历所有顶点，计算颜色
+    let coloredVerts = 0;
     for (let i = 0; i < numVerts; i++) {
         const vertPos = new THREE.Vector3(
             positions.array[i * 3],
@@ -4537,22 +4768,36 @@ function updateManoHapticColors(currentTime) {
             positions.array[i * 3 + 2]
         );
 
-        // 默认肤色
-        let r = 1.0, g = 0.858, b = 0.674;
+        // 默认肤色 (深色，提高对比度)
+        let r = 0.82, g = 0.64, b = 0.49;
+        let wasColored = false;
 
         // 检查与各指尖的距离
+        const influenceRadius = hapticSettings.radius;  // 使用设置的半径
+        // 使用用户设置的力值映射范围
+        const mappingMin = hapticSettings.forceMin;
+        const mappingMax = hapticSettings.forceMax;
+
         for (const [finger, tipPos] of Object.entries(fingertipPositions)) {
             const force = hapticValues[finger];
             if (force === undefined) continue;
 
-            const dist = vertPos.distanceTo(tipPos);
-            if (dist < FINGERTIP_INFLUENCE_RADIUS) {
-                // 计算影响权重（距离越近权重越大）
-                const weight = 1 - (dist / FINGERTIP_INFLUENCE_RADIUS);
+            // 如果力值小于映射下限，不着色
+            if (force < mappingMin) continue;
 
-                // 归一化力值
-                const normalizedForce = (force - forceMin) / (forceMax - forceMin);
+            const dist = vertPos.distanceTo(tipPos);
+            if (dist < influenceRadius) {
+                wasColored = true;
+                // 计算影响权重（距离越近权重越大）
+                const distWeight = 1 - (dist / influenceRadius);
+
+                // 使用用户设置的范围归一化力值
+                const normalizedForce = Math.min(1, Math.max(0, (force - mappingMin) / (mappingMax - mappingMin)));
                 const forceColor = getForceColor(normalizedForce);
+
+                // 力值权重 - 力越大颜色越明显
+                const forceWeight = Math.min(1, normalizedForce * 2);  // 放大力值影响
+                const weight = distWeight * (0.3 + 0.7 * forceWeight);  // 最小30%权重
 
                 // 混合颜色
                 r = r * (1 - weight) + forceColor.r * weight;
@@ -4561,9 +4806,16 @@ function updateManoHapticColors(currentTime) {
             }
         }
 
+        if (wasColored) coloredVerts++;
+
         colors.array[i * 3] = r;
         colors.array[i * 3 + 1] = g;
         colors.array[i * 3 + 2] = b;
+    }
+
+    // 调试：输出着色顶点数
+    if (hapticDebugCounter < 15) {
+        console.log(`Haptic: colored ${coloredVerts}/${numVerts} vertices`);
     }
 
     colors.needsUpdate = true;
@@ -4582,9 +4834,9 @@ function resetManoColors() {
     const numVerts = colors.count;
 
     for (let i = 0; i < numVerts; i++) {
-        colors.array[i * 3] = 1.0;
-        colors.array[i * 3 + 1] = 0.858;
-        colors.array[i * 3 + 2] = 0.674;
+        colors.array[i * 3] = 0.82;
+        colors.array[i * 3 + 1] = 0.64;
+        colors.array[i * 3 + 2] = 0.49;
     }
 
     colors.needsUpdate = true;

@@ -506,51 +506,77 @@
                         </div>
                     </div>
 
-                    <!-- IK Control Panel (Right) -->
-                    <div class="controls-panel" id="ik-panel" style="flex: 1; min-width: 350px; padding: 12px 15px; background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%); border: 1px solid #c8e6c9; border-radius: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                            <h3 style="color: #2e7d32; margin: 0; font-size: 1rem;">🎯 逆运动学 (IK)</h3>
-                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer; font-size: 0.75rem; color: #558b2f;">
-                                <input type="checkbox" id="show-ik-target" checked>
-                                <span>显示目标球</span>
-                            </label>
+                    <!-- IK + Haptic 容器 (上下布局) -->
+                    <div style="display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 350px;">
+                        <!-- IK Control Panel -->
+                        <div class="controls-panel" id="ik-panel" style="padding: 8px 12px; background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%); border: 1px solid #c8e6c9; border-radius: 8px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <h3 style="color: #2e7d32; margin: 0; font-size: 0.9rem;">🎯 IK</h3>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.7rem; color: #558b2f;">
+                                    <input type="checkbox" id="show-ik-target" checked>
+                                    <span>目标球</span>
+                                </label>
+                            </div>
+                            <!-- 目标位置 + 计算按钮 (单行紧凑) -->
+                            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                                <input type="number" id="ik-target-x" value="0.15" step="0.01" style="width: 55px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.75rem;" title="X">
+                                <input type="number" id="ik-target-y" value="0.0" step="0.01" style="width: 55px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.75rem;" title="Y">
+                                <input type="number" id="ik-target-z" value="0.2" step="0.01" style="width: 55px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.75rem;" title="Z">
+                                <button id="ik-compute-btn" style="padding: 2px 8px; background: #4caf50; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">计算</button>
+                                <button id="ik-reset-btn" style="padding: 2px 6px; background: #ff9800; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">复位</button>
+                                <button class="ik-preset-btn" data-x="0.15" data-y="0" data-z="0.2" style="padding: 2px 5px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">前</button>
+                                <button class="ik-preset-btn" data-x="0" data-y="0.15" data-z="0.2" style="padding: 2px 5px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">左</button>
+                                <button class="ik-preset-btn" data-x="0" data-y="-0.15" data-z="0.2" style="padding: 2px 5px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">右</button>
+                                <button class="ik-preset-btn" data-x="0.39" data-y="0" data-z="0.23" style="padding: 2px 5px; background: #81c784; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.7rem;">Home</button>
+                            </div>
+                            <!-- IK Status (hidden by default) -->
+                            <div id="ik-status" style="padding: 4px 8px; background: rgba(255,255,255,0.7); border-radius: 3px; display: none; font-size: 0.7rem; margin-top: 4px;">
+                                <span><strong>状态:</strong> <span id="ik-status-text" style="color: #2e7d32;">未计算</span></span>
+                                <span style="margin-left: 8px;"><strong>误差:</strong> <span id="ik-position-error">-</span> m</span>
+                            </div>
+                            <div id="ik-joint-angles" style="margin-top: 4px; display: none;">
+                                <div id="joint-angles-list" style="display: flex; flex-wrap: wrap; gap: 4px; font-size: 0.7rem;"></div>
+                            </div>
                         </div>
 
-                    <!-- 第一行：目标位置 + 计算按钮 -->
-                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;">
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <label style="font-size: 0.85rem; color: #2e7d32; font-weight: 500;">X</label>
-                            <input type="number" id="ik-target-x" value="0.15" step="0.01" style="width: 70px; padding: 4px 6px; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 0.85rem;">
+                        <!-- Haptic Visualization Control Panel -->
+                        <div class="controls-panel" id="haptic-panel" style="padding: 8px 12px; background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border: 1px solid #ffcc80; border-radius: 8px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                                <h3 style="color: #e65100; margin: 0; font-size: 0.9rem;">👆 触觉可视化</h3>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.7rem; color: #bf360c;">
+                                    <input type="checkbox" id="haptic-enabled" checked>
+                                    <span>启用</span>
+                                </label>
+                            </div>
+                            <!-- 当前力值 + 参数控制 (紧凑单行布局) -->
+                            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.75rem;">
+                                <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: rgba(255,255,255,0.7); border-radius: 4px;">
+                                    <span style="color: #666;">力:</span>
+                                    <span id="haptic-current-force" style="font-weight: 600; color: #ff5722; min-width: 70px;">--</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: #666;">偏移:</span>
+                                    <input type="number" id="haptic-time-offset" value="0" step="0.1" style="width: 50px; padding: 2px 4px; border: 1px solid #ffcc80; border-radius: 3px; font-size: 0.7rem;">
+                                    <span style="color: #999;">s</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: #666;">半径:</span>
+                                    <input type="range" id="haptic-radius" min="10" max="100" value="50" style="width: 50px;">
+                                    <span id="haptic-radius-value" style="min-width: 32px;">50mm</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: #4caf50;">绿</span>
+                                    <input type="range" id="haptic-force-min" min="0" max="50" value="0" step="1" style="width: 40px;">
+                                    <span id="haptic-force-min-value" style="min-width: 22px;">0N</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <span style="color: #f44336;">红</span>
+                                    <input type="range" id="haptic-force-max" min="1" max="100" value="10" step="1" style="width: 40px;">
+                                    <span id="haptic-force-max-value" style="min-width: 22px;">10N</span>
+                                </div>
+                            </div>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <label style="font-size: 0.85rem; color: #2e7d32; font-weight: 500;">Y</label>
-                            <input type="number" id="ik-target-y" value="0.0" step="0.01" style="width: 70px; padding: 4px 6px; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 0.85rem;">
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <label style="font-size: 0.85rem; color: #2e7d32; font-weight: 500;">Z</label>
-                            <input type="number" id="ik-target-z" value="0.2" step="0.01" style="width: 70px; padding: 4px 6px; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 0.85rem;">
-                        </div>
-                        <span style="color: #81c784; font-size: 0.8rem;">m</span>
-                        <button id="ik-compute-btn" style="padding: 5px 12px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500;">计算</button>
-                        <button id="ik-reset-btn" style="padding: 5px 10px; background: #ff9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">复位</button>
-                        <span style="color: #81c784; margin-left: 5px;">|</span>
-                        <button class="ik-preset-btn" data-x="0.15" data-y="0" data-z="0.2" style="padding: 3px 8px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">前</button>
-                        <button class="ik-preset-btn" data-x="0" data-y="0.15" data-z="0.2" style="padding: 3px 8px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">左</button>
-                        <button class="ik-preset-btn" data-x="0" data-y="-0.15" data-z="0.2" style="padding: 3px 8px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">右</button>
-                        <button class="ik-preset-btn" data-x="0.1" data-y="0" data-z="0.3" style="padding: 3px 8px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">上</button>
-                        <button class="ik-preset-btn" data-x="0.2" data-y="0" data-z="0.1" style="padding: 3px 8px; background: #a5d6a7; color: #1b5e20; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">低</button>
-                        <button class="ik-preset-btn" data-x="0.39" data-y="0" data-z="0.23" style="padding: 3px 8px; background: #81c784; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8rem;">Home</button>
-                    </div>
-
-                    <!-- IK Status + Joint Angles (inline) -->
-                        <div id="ik-status" style="padding: 6px 10px; background: rgba(255,255,255,0.7); border-radius: 4px; display: none; font-size: 0.8rem;">
-                            <span><strong>状态:</strong> <span id="ik-status-text" style="color: #2e7d32;">未计算</span></span>
-                            <span style="margin-left: 10px;"><strong>误差:</strong> <span id="ik-position-error">-</span> m</span>
-                        </div>
-                        <div id="ik-joint-angles" style="margin-top: 8px; display: none;">
-                            <div id="joint-angles-list" style="display: flex; flex-wrap: wrap; gap: 6px; font-size: 0.75rem;"></div>
-                        </div>
-                    </div>
+                    </div><!-- End IK + Haptic 容器 -->
                 </div><!-- End flex container -->
 
             </section>

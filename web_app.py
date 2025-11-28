@@ -901,14 +901,18 @@ def gripper_data():
     try:
         # MPS file is optional (for testing display without hand data)
         mps_file = request.files.get('mps_file')
+        haptic_file = request.files.get('haptic_file')  # Haptic sensor data
         urdf_file = request.files.get('urdf_file')
         stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
 
         # Check if at least one file type is provided
         has_mps = mps_file and mps_file.filename != ''
+        has_haptic = haptic_file and haptic_file.filename != ''
         has_urdf = urdf_file and urdf_file.filename != ''
         has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
-        
+
+        print(f"File upload check: mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
+
         if not (has_mps or has_urdf or has_stl):
             return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
 
@@ -917,6 +921,13 @@ def gripper_data():
         if has_mps:
             mps_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(mps_file.filename))
             mps_file.save(mps_path)
+
+        # Save haptic file if provided
+        haptic_path = None
+        if has_haptic:
+            haptic_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(haptic_file.filename))
+            haptic_file.save(haptic_path)
+            print(f"Haptic file saved to: {haptic_path}")
 
         # Process URDF file if provided
         urdf_data = None
@@ -989,6 +1000,19 @@ def gripper_data():
                 print(f"Warning: Failed to load hand landmarks from MPS file: {e}")
                 hand_landmarks_data = None
 
+        # Load haptic data (if provided)
+        haptic_data = None
+        if haptic_path:
+            try:
+                from app.utils.haptic_loader import load_haptic_data
+                haptic_data = load_haptic_data(haptic_path)
+                print(f"Haptic data loaded: {len(haptic_data.get('timestamps', []))} samples, sensors: {list(haptic_data.get('sensors', {}).keys())}")
+            except Exception as e:
+                import traceback
+                print(f"Warning: Failed to load haptic data: {e}")
+                print(traceback.format_exc())
+                haptic_data = None
+
         # Auto-load IK chain if URDF is provided
         ik_loaded = False
         if urdf_path and IKPY_AVAILABLE:
@@ -1002,6 +1026,7 @@ def gripper_data():
         # Return data
         result = {
             'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
+            'haptic_data': haptic_data,  # Can be None if no haptic file
             'stl_files': stl_filenames,
             'stl_urls': stl_urls,
             'stl_file_map': stl_file_map,

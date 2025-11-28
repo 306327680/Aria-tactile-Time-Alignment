@@ -45,6 +45,10 @@ def gripper_data():
         has_urdf = urdf_file and urdf_file.filename != ''
         has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
 
+        print(f"File upload check: mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
+        if haptic_file:
+            print(f"Haptic file info: filename='{haptic_file.filename}'")
+
         if not (has_mps or has_urdf or has_stl):
             return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
 
@@ -154,12 +158,19 @@ def gripper_data():
 
         # Load haptic data (if provided)
         haptic_data = None
+        print(f"Haptic path: {haptic_path}")
         if haptic_path:
             try:
+                print(f"Loading haptic data from: {haptic_path}")
                 haptic_data = load_haptic_data(haptic_path)
+                print(f"Haptic data loaded: {haptic_data is not None}, sensors: {list(haptic_data.get('sensors', {}).keys()) if haptic_data else 'N/A'}")
             except Exception as e:
+                import traceback
                 print(f"Warning: Failed to load haptic data: {e}")
+                print(traceback.format_exc())
                 haptic_data = None
+        else:
+            print("No haptic path - haptic file was not uploaded or saved")
 
         # Return data
         result = {
