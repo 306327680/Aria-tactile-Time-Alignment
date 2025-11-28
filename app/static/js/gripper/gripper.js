@@ -38,7 +38,19 @@ let gripperLinkInitialTransforms = {};  // Store initial transforms for reset
 let urdfData = null;  // Parsed URDF data
 let handLandmarksData = null;
 let hapticData = null;  // Haptic sensor data
+let slamTrajectory = null;  // SLAM trajectory data (device positions in world coordinates)
+let useWorldCoordinates = false;  // Flag indicating if data is in world coordinates
 let handTimestamps = [];  // Timestamps for each frame
+
+// Trajectory visualization settings
+let trajectorySettings = {
+    enabled: true,
+    duration: 10,  // seconds
+    trackPoint: 'index',  // wrist, thumb, index, middle, palm
+    lineWidth: 3
+};
+let trajectoryLine = null;  // THREE.Line object for trajectory
+let trajectoryPoints = [];  // Array of Vector3 points for trajectory
 let hapticTimestamps = [];  // Haptic timestamps
 let currentFrameIndex = 0;
 let animationId = null;
@@ -63,8 +75,8 @@ let mappingSettings = {
     showGripper: true
 };
 
-// Hand pose transform settings
-let handPoseTransform = {
+// Hand pose transform settings - for device coordinates (fixed at origin)
+let handPoseTransformDevice = {
     posX: 0,      // Position offset in meters
     posY: 0,
     posZ: 0,
@@ -73,6 +85,20 @@ let handPoseTransform = {
     rotZ: 0,
     scale: 1.0
 };
+
+// Hand pose transform settings - for world coordinates (SLAM)
+let handPoseTransformWorld = {
+    posX: 0,      // Position offset in meters
+    posY: 0,
+    posZ: 0,
+    rotX: 0,      // Rotation in degrees
+    rotY: 0,
+    rotZ: 0,
+    scale: 1.0
+};
+
+// Active hand pose transform (points to current mode's settings)
+let handPoseTransform = handPoseTransformDevice;
 
 // Hand-to-gripper mapping settings
 let handGripperMapping = {
@@ -528,6 +554,60 @@ async function loadSTLModels(urls, filenames) {
     }
 }
 
+// Apply hand pose transform to a single point (used for trajectory)
+function applyHandPoseTransformToPoint(point, wrist) {
+    if (!point || point.length < 3) return point;
+
+    // Get rotation angles in radians
+    const rotX = handPoseTransform.rotX * Math.PI / 180;
+    const rotY = handPoseTransform.rotY * Math.PI / 180;
+    const rotZ = handPoseTransform.rotZ * Math.PI / 180;
+
+    // Pre-calculate rotation matrix components (Euler XYZ order)
+    const cx = Math.cos(rotX), sx = Math.sin(rotX);
+    const cy = Math.cos(rotY), sy = Math.sin(rotY);
+    const cz = Math.cos(rotZ), sz = Math.sin(rotZ);
+
+    if (useWorldCoordinates) {
+        // World coordinates mode: apply transform around world origin
+        let x = wrist[0] + (point[0] - wrist[0]) * handPoseTransform.scale;
+        let y = wrist[1] + (point[1] - wrist[1]) * handPoseTransform.scale;
+        let z = wrist[2] + (point[2] - wrist[2]) * handPoseTransform.scale;
+
+        // Apply rotation around origin
+        let y1 = y * cx - z * sx;
+        let z1 = y * sx + z * cx;
+        let x2 = x * cy + z1 * sy;
+        let z2 = -x * sy + z1 * cy;
+        let x3 = x2 * cz - y1 * sz;
+        let y3 = x2 * sz + y1 * cz;
+
+        return [
+            x3 + handPoseTransform.posX,
+            y3 + handPoseTransform.posY,
+            z2 + handPoseTransform.posZ
+        ];
+    } else {
+        // Device coordinates mode: relative to wrist
+        let x = (point[0] - wrist[0]) * handPoseTransform.scale;
+        let y = (point[1] - wrist[1]) * handPoseTransform.scale;
+        let z = (point[2] - wrist[2]) * handPoseTransform.scale;
+
+        let y1 = y * cx - z * sx;
+        let z1 = y * sx + z * cx;
+        let x2 = x * cy + z1 * sy;
+        let z2 = -x * sy + z1 * cy;
+        let x3 = x2 * cz - y1 * sz;
+        let y3 = x2 * sz + y1 * cz;
+
+        return [
+            x3 + handPoseTransform.posX,
+            y3 + handPoseTransform.posY,
+            z2 + handPoseTransform.posZ
+        ];
+    }
+}
+
 // Map hand landmarks to gripper positions with pose transform
 function mapHandToGripper(landmarks) {
     if (!landmarks || landmarks.length !== 21) return null;
@@ -562,35 +642,85 @@ function mapHandToGripper(landmarks) {
     const cy = Math.cos(rotY), sy = Math.sin(rotY);
     const cz = Math.cos(rotZ), sz = Math.sin(rotZ);
 
-    // Map all landmarks relative to wrist position with full transform
+    // Map all landmarks with transform
     const mappedLandmarks = landmarks.map((landmark, idx) => {
-        // Relative position to wrist, scaled
-        let x = (landmark[0] - wrist[0]) * handPoseTransform.scale;
-        let y = (landmark[1] - wrist[1]) * handPoseTransform.scale;
-        let z = (landmark[2] - wrist[2]) * handPoseTransform.scale;
+        if (useWorldCoordinates) {
+            // World coordinates mode: apply transform around world origin for alignment
+            // First apply scale around wrist
+            let x = wrist[0] + (landmark[0] - wrist[0]) * handPoseTransform.scale;
+            let y = wrist[1] + (landmark[1] - wrist[1]) * handPoseTransform.scale;
+            let z = wrist[2] + (landmark[2] - wrist[2]) * handPoseTransform.scale;
 
-        // Apply rotation (Euler XYZ)
-        // Rotate around X
-        let y1 = y * cx - z * sx;
-        let z1 = y * sx + z * cx;
-        // Rotate around Y
-        let x2 = x * cy + z1 * sy;
-        let z2 = -x * sy + z1 * cy;
-        // Rotate around Z
-        let x3 = x2 * cz - y1 * sz;
-        let y3 = x2 * sz + y1 * cz;
+            // Apply rotation around origin (for plane alignment)
+            // Rotate around X
+            let y1 = y * cx - z * sx;
+            let z1 = y * sx + z * cx;
+            // Rotate around Y
+            let x2 = x * cy + z1 * sy;
+            let z2 = -x * sy + z1 * cy;
+            // Rotate around Z
+            let x3 = x2 * cz - y1 * sz;
+            let y3 = x2 * sz + y1 * cz;
 
-        // Apply position offset
-        return [
-            x3 + handPoseTransform.posX,
-            y3 + handPoseTransform.posY,
-            z2 + handPoseTransform.posZ
-        ];
+            // Apply position offset
+            return [
+                x3 + handPoseTransform.posX,
+                y3 + handPoseTransform.posY,
+                z2 + handPoseTransform.posZ
+            ];
+        } else {
+            // Device coordinates mode: relative to wrist with pose transform
+            let x = (landmark[0] - wrist[0]) * handPoseTransform.scale;
+            let y = (landmark[1] - wrist[1]) * handPoseTransform.scale;
+            let z = (landmark[2] - wrist[2]) * handPoseTransform.scale;
+
+            // Apply rotation (Euler XYZ)
+            // Rotate around X
+            let y1 = y * cx - z * sx;
+            let z1 = y * sx + z * cx;
+            // Rotate around Y
+            let x2 = x * cy + z1 * sy;
+            let z2 = -x * sy + z1 * cy;
+            // Rotate around Z
+            let x3 = x2 * cz - y1 * sz;
+            let y3 = x2 * sz + y1 * cz;
+
+            // Apply position offset
+            return [
+                x3 + handPoseTransform.posX,
+                y3 + handPoseTransform.posY,
+                z2 + handPoseTransform.posZ
+            ];
+        }
     });
+
+    // Calculate transformed wrist position
+    let transformedWrist;
+    if (useWorldCoordinates) {
+        let wx = wrist[0], wy = wrist[1], wz = wrist[2];
+        let wy1 = wy * cx - wz * sx;
+        let wz1 = wy * sx + wz * cx;
+        let wx2 = wx * cy + wz1 * sy;
+        let wz2 = -wx * sy + wz1 * cy;
+        let wx3 = wx2 * cz - wy1 * sz;
+        let wy3 = wx2 * sz + wy1 * cz;
+        transformedWrist = [
+            wx3 + handPoseTransform.posX,
+            wy3 + handPoseTransform.posY,
+            wz2 + handPoseTransform.posZ
+        ];
+    } else {
+        transformedWrist = [
+            handPoseTransform.posX,
+            handPoseTransform.posY,
+            handPoseTransform.posZ
+        ];
+    }
 
     return {
         landmarks: mappedLandmarks,
-        wrist: wrist,
+        wrist: transformedWrist,
+        wristWorld: wrist,  // Original wrist position
         opening: opening,
         center: [
             (thumbTip[0] + indexTip[0]) / 2,
@@ -604,6 +734,109 @@ function mapHandToGripper(landmarks) {
 let handLandmarkGeometry = null;
 let handLandmarkMaterials = {};
 let handLineGeometries = [];
+
+// Get landmark index for trajectory tracking point
+function getTrackPointIndex(trackPoint) {
+    const trackPointMap = {
+        'wrist': 5,
+        'thumb': 0,
+        'index': 1,
+        'middle': 2,
+        'ring': 3,
+        'pinky': 4,
+        'palm': 20
+    };
+    return trackPointMap[trackPoint] || 1;  // default to index finger
+}
+
+// Update trajectory with current frame data
+function updateTrajectory(scene, currentTime) {
+    if (!useWorldCoordinates || !trajectorySettings.enabled) {
+        // Remove trajectory line if it exists
+        if (trajectoryLine && scene) {
+            scene.remove(trajectoryLine);
+            if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
+            if (trajectoryLine.material) trajectoryLine.material.dispose();
+            trajectoryLine = null;
+        }
+        trajectoryPoints = [];
+        return;
+    }
+
+    if (!handLandmarksData || !handLandmarksData.right_hand || !handTimestamps || handTimestamps.length === 0) {
+        return;
+    }
+
+    // Calculate time range for trajectory
+    const startTime = currentTime - trajectorySettings.duration;
+    const trackPointIdx = getTrackPointIndex(trajectorySettings.trackPoint);
+
+    // Collect points within the time range
+    trajectoryPoints = [];
+    for (let i = 0; i < handTimestamps.length; i++) {
+        const t = handTimestamps[i];
+        if (t >= startTime && t <= currentTime) {
+            const landmarks = handLandmarksData.right_hand[i];
+            if (landmarks && landmarks.length > trackPointIdx) {
+                const point = landmarks[trackPointIdx];
+                if (point && point.length >= 3) {
+                    // Apply hand pose transform to trajectory point (same as hand landmarks)
+                    const wrist = landmarks[5] || [0, 0, 0];  // Use wrist as reference
+                    const transformedPoint = applyHandPoseTransformToPoint(point, wrist);
+                    trajectoryPoints.push(new THREE.Vector3(transformedPoint[0], transformedPoint[1], transformedPoint[2]));
+                }
+            }
+        }
+    }
+
+    // Need at least 2 points to draw a line
+    if (trajectoryPoints.length < 2) {
+        if (trajectoryLine && scene) {
+            scene.remove(trajectoryLine);
+        }
+        return;
+    }
+
+    // Create or update trajectory line
+    if (trajectoryLine) {
+        scene.remove(trajectoryLine);
+        if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
+        if (trajectoryLine.material) trajectoryLine.material.dispose();
+    }
+
+    // Create gradient colors from old (blue) to new (red)
+    const colors = [];
+    for (let i = 0; i < trajectoryPoints.length; i++) {
+        const t = i / (trajectoryPoints.length - 1);  // 0 to 1
+        // Gradient: blue (old) -> cyan -> green -> yellow -> red (new)
+        const color = new THREE.Color();
+        color.setHSL(0.6 - t * 0.6, 1.0, 0.5);  // H: 0.6 (blue) to 0 (red)
+        colors.push(color.r, color.g, color.b);
+    }
+
+    const geometry = new THREE.BufferGeometry().setFromPoints(trajectoryPoints);
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+    const material = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        linewidth: trajectorySettings.lineWidth  // Note: linewidth > 1 only works on some platforms
+    });
+
+    trajectoryLine = new THREE.Line(geometry, material);
+    trajectoryLine.userData.isTrajectory = true;
+    scene.add(trajectoryLine);
+}
+
+// Clear trajectory from scene
+function clearTrajectory(scene) {
+    if (trajectoryLine && scene) {
+        scene.remove(trajectoryLine);
+        if (trajectoryLine.geometry) trajectoryLine.geometry.dispose();
+        if (trajectoryLine.material) trajectoryLine.material.dispose();
+        trajectoryLine = null;
+    }
+    trajectoryPoints = [];
+}
 
 // Render hand landmarks
 function renderHandLandmarks(scene, landmarks, isMapped = false) {
@@ -1434,7 +1667,38 @@ function applyLBSDeformation(landmarks, scale, inverseQuat, wristPos) {
 
     if (shouldDebug) {
         console.log('=== LBS Rotation Debug ===');
-        // 检查食指旋转
+        // 检查各手指 MCP 旋转
+        const fingerNames = ['', 'index', '', '', 'middle', '', '', 'ring', '', '', 'pinky', '', '', 'thumb'];
+        [1, 4, 7, 10, 13].forEach(idx => {
+            const q = jointRotations[idx];
+            const euler = new THREE.Euler().setFromQuaternion(q);
+            console.log(fingerNames[idx], 'MCP rotation (deg):',
+                (euler.x * 180/Math.PI).toFixed(1),
+                (euler.y * 180/Math.PI).toFixed(1),
+                (euler.z * 180/Math.PI).toFixed(1)
+            );
+        });
+
+        // 检查 ring 和 pinky 的 restDir 和 currDir
+        console.log('=== Ring/Pinky Direction Debug ===');
+        [7, 10].forEach(k => {
+            const child = childJoint[k];
+            if (child >= 0) {
+                const restDir = new THREE.Vector3(
+                    restJoints[child][0] - restJoints[k][0],
+                    restJoints[child][1] - restJoints[k][1],
+                    restJoints[child][2] - restJoints[k][2]
+                ).normalize();
+                const currDir = currentJoints[child].clone().sub(currentJoints[k]).normalize();
+                console.log('Joint', k, '(' + fingerNames[k] + ') MCP:');
+                console.log('  restDir:', restDir.x.toFixed(3), restDir.y.toFixed(3), restDir.z.toFixed(3));
+                console.log('  currDir:', currDir.x.toFixed(3), currDir.y.toFixed(3), currDir.z.toFixed(3));
+                console.log('  currentJoint[k]:', currentJoints[k].x.toFixed(4), currentJoints[k].y.toFixed(4), currentJoints[k].z.toFixed(4));
+                console.log('  currentJoint[child]:', currentJoints[child].x.toFixed(4), currentJoints[child].y.toFixed(4), currentJoints[child].z.toFixed(4));
+            }
+        });
+
+        // 检查食指旋转（保留原有的）
         const q = jointRotations[1];
         const euler = new THREE.Euler().setFromQuaternion(q);
         console.log('Index MCP rotation (deg):',
@@ -2078,6 +2342,17 @@ function renderGripperScene() {
     // Render mapped hand (landmarks or mesh based on view mode)
     renderHandVisualization(gripperScene, mapped.landmarks, true);
 
+    // Update trajectory (only in world coordinates mode)
+    if (useWorldCoordinates && handTimestamps.length > 0) {
+        const currentTime = handTimestamps[Math.min(frameIndex, handTimestamps.length - 1)] || 0;
+        updateTrajectory(gripperScene, currentTime);
+    }
+
+    // Update IK if follow hand is enabled
+    if (ikFollowHand && ikChainLoaded) {
+        computeIKForCurrentHand();
+    }
+
     // Update haptic colors on MANO mesh if haptic data is available
     if (hapticData) {
         // Use hand timestamps if available, otherwise use haptic timestamps
@@ -2132,11 +2407,14 @@ let urdfFileInput;
 let stlFilesInput;
 let stlFolderInput;
 let hapticFileInput;
+let mpsFolderInput;  // MPS folder input (highest priority)
+let mpsFolderFiles = null;  // Files from MPS folder
 let mpsFileInfo;
 let hapticFileInfo;
 let urdfFileInfo;
 let stlFileInfo;
 let stlFileList;
+let mpsFolderInfo;
 let loadBtn;
 let loadingIndicator;
 let visualizationSection;
@@ -2592,14 +2870,15 @@ if (!uploadForm) {
         console.log('Form submitted');
         
         // Check if files are selected
+        const hasMpsFolder = mpsFolderFiles && mpsFolderFiles.length > 0;
         const hasMpsFile = mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0;
         const hasUrdfFile = urdfFileInput && urdfFileInput.files && urdfFileInput.files.length > 0;
         const hasStlFiles = stlFilesInput && stlFilesInput.files && stlFilesInput.files.length > 0;
         const hasConfigHint = mpsFileInfo && (mpsFileInfo.textContent.includes('配置中') || mpsFileInfo.textContent.includes('上次使用'));
-        
-        // Allow loading without MPS file if gripper files are provided (for testing display)
-        if (!hasMpsFile && !hasConfigHint && !hasUrdfFile && !hasStlFiles) {
-            alert('请至少选择以下文件之一：\n- MPS CSV 文件（手部数据）\n- URDF/STL 文件（夹爪模型，用于测试显示）');
+
+        // Allow loading with MPS folder (highest priority), or without MPS if gripper files are provided
+        if (!hasMpsFolder && !hasMpsFile && !hasConfigHint && !hasUrdfFile && !hasStlFiles) {
+            alert('请至少选择以下文件之一：\n- MPS 文件夹（SLAM + 手部追踪）\n- MPS CSV 文件（手部数据）\n- URDF/STL 文件（夹爪模型，用于测试显示）');
             return;
         }
         
@@ -2617,8 +2896,33 @@ if (!uploadForm) {
 
         try {
             const formData = new FormData();
+
+            // MPS folder has highest priority - includes SLAM + hand tracking for world coordinates
+            if (hasMpsFolder) {
+                // Find the SLAM and hand tracking files
+                const slamFile = mpsFolderFiles.find(f => f.webkitRelativePath.includes('slam/closed_loop_trajectory.csv'));
+                const handFile = mpsFolderFiles.find(f => f.webkitRelativePath.includes('hand_tracking/hand_tracking_results.csv'));
+
+                // Send both files with their relative paths preserved
+                if (slamFile) {
+                    // Extract just the relative path within the MPS folder
+                    const parts = slamFile.webkitRelativePath.split('/');
+                    const mpsIdx = parts.findIndex(p => p.includes('mps') || parts.indexOf(p) === 0);
+                    const relativePath = parts.slice(mpsIdx + 1).join('/');
+                    formData.append('mps_folder_files', slamFile, relativePath || 'slam/closed_loop_trajectory.csv');
+                    console.log('SLAM file:', slamFile.webkitRelativePath);
+                }
+                if (handFile) {
+                    const parts = handFile.webkitRelativePath.split('/');
+                    const mpsIdx = parts.findIndex(p => p.includes('mps') || parts.indexOf(p) === 0);
+                    const relativePath = parts.slice(mpsIdx + 1).join('/');
+                    formData.append('mps_folder_files', handFile, relativePath || 'hand_tracking/hand_tracking_results.csv');
+                    console.log('Hand tracking file:', handFile.webkitRelativePath);
+                }
+                console.log('Using MPS folder data with world coordinates');
+            }
             // MPS file is optional (for testing display without hand data)
-            if (mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0) {
+            else if (mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0) {
                 formData.append('mps_file', mpsFileInput.files[0]);
                 console.log('MPS file:', mpsFileInput.files[0].name);
             } else {
@@ -2671,9 +2975,57 @@ if (!uploadForm) {
             handLandmarksData = data.hand_landmarks || null;
             hapticData = data.haptic_data || null;
             urdfData = data.urdf || null;
+            slamTrajectory = data.slam_trajectory || null;
+            useWorldCoordinates = data.world_coordinates || false;
 
             console.log('Hand landmarks data:', handLandmarksData);
             console.log('Right hand frames:', handLandmarksData?.right_hand?.length || 0);
+            console.log('World coordinates:', useWorldCoordinates);
+            if (slamTrajectory) {
+                console.log('SLAM trajectory:', slamTrajectory.positions?.length || 0, 'poses');
+            }
+
+            // Switch hand pose transform based on coordinate mode
+            if (useWorldCoordinates) {
+                handPoseTransform = handPoseTransformWorld;
+                console.log('Using world coordinates hand pose transform');
+            } else {
+                handPoseTransform = handPoseTransformDevice;
+                console.log('Using device coordinates hand pose transform');
+            }
+
+            // Update UI based on coordinate mode
+            const handPosePanel = document.getElementById('hand-pose-panel');
+            const trajectoryPanel = document.getElementById('trajectory-panel');
+            const handPoseModeLabel = document.getElementById('hand-pose-mode-label');
+
+            // Hand pose panel is always visible, but label changes
+            if (handPosePanel) {
+                handPosePanel.style.display = 'block';
+            }
+
+            if (handPoseModeLabel) {
+                if (useWorldCoordinates) {
+                    handPoseModeLabel.textContent = '(世界坐标 - 平面对齐)';
+                    handPoseModeLabel.style.color = '#1565c0';
+                } else {
+                    handPoseModeLabel.textContent = '(设备坐标)';
+                    handPoseModeLabel.style.color = '#666';
+                }
+            }
+
+            // Update hand pose UI inputs to show current mode's values
+            updateHandPoseUI();
+
+            if (trajectoryPanel) {
+                if (useWorldCoordinates) {
+                    trajectoryPanel.style.display = 'block';
+                    console.log('Trajectory panel shown (world coordinates mode)');
+                } else {
+                    trajectoryPanel.style.display = 'none';
+                    console.log('Trajectory panel hidden (device coordinates mode)');
+                }
+            }
             console.log('Haptic data:', hapticData);
             if (hapticData) {
                 console.log('Haptic sensors:', Object.keys(hapticData.sensors || {}));
@@ -2781,7 +3133,14 @@ if (!uploadForm) {
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
                 const firstFrameLandmarks = handLandmarksData.right_hand[0];
                 if (firstFrameLandmarks && firstFrameLandmarks.length === 21) {
-                    adjustCameraToLandmarks(firstFrameLandmarks);
+                    // Use mapped landmarks for camera adjustment (includes world coordinates transform)
+                    const mapped = mapHandToGripper(firstFrameLandmarks);
+                    if (mapped && mapped.landmarks) {
+                        adjustCameraToLandmarks(mapped.landmarks);
+                        console.log('Camera adjusted to mapped landmarks, useWorldCoordinates:', useWorldCoordinates);
+                    } else {
+                        adjustCameraToLandmarks(firstFrameLandmarks);
+                    }
                 }
             } else {
                 // No hand data - use default camera position to view origin (where gripper will be)
@@ -2915,10 +3274,51 @@ document.getElementById('show-gripper').addEventListener('change', function(e) {
     saveFileInfo();
 });
 
+// Trajectory controls
+const showTrajectoryCheckbox = document.getElementById('show-trajectory');
+const trajectoryDurationInput = document.getElementById('trajectory-duration');
+const trajectoryPointSelect = document.getElementById('trajectory-point');
+const trajectoryWidthInput = document.getElementById('trajectory-width');
+
+if (showTrajectoryCheckbox) {
+    showTrajectoryCheckbox.addEventListener('change', function(e) {
+        trajectorySettings.enabled = e.target.checked;
+        if (!e.target.checked) {
+            clearTrajectory(gripperScene);
+        }
+    });
+}
+
+if (trajectoryDurationInput) {
+    trajectoryDurationInput.addEventListener('change', function(e) {
+        trajectorySettings.duration = parseFloat(e.target.value) || 10;
+    });
+}
+
+if (trajectoryPointSelect) {
+    trajectoryPointSelect.addEventListener('change', function(e) {
+        trajectorySettings.trackPoint = e.target.value;
+    });
+}
+
+if (trajectoryWidthInput) {
+    trajectoryWidthInput.addEventListener('input', function(e) {
+        trajectorySettings.lineWidth = parseInt(e.target.value) || 3;
+    });
+}
+
 // Hand pose transform controls
-const HAND_POSE_STORAGE_KEY = 'aria_hand_pose_transform';
+const HAND_POSE_STORAGE_KEY_DEVICE = 'aria_hand_pose_transform_device';
+const HAND_POSE_STORAGE_KEY_WORLD = 'aria_hand_pose_transform_world';
+
+// Get the storage key based on current mode
+function getHandPoseStorageKey() {
+    return useWorldCoordinates ? HAND_POSE_STORAGE_KEY_WORLD : HAND_POSE_STORAGE_KEY_DEVICE;
+}
 
 function saveHandPoseTransform() {
+    const storageKey = getHandPoseStorageKey();
+    const modeLabel = useWorldCoordinates ? '世界坐标' : '设备坐标';
     const data = {
         ...handPoseTransform,
         handGripperMapping: {
@@ -2926,17 +3326,20 @@ function saveHandPoseTransform() {
             closeDistCm: handGripperMapping.closeDistCm,
             openDistCm: handGripperMapping.openDistCm
         },
+        mode: useWorldCoordinates ? 'world' : 'device',
         savedAt: new Date().toISOString()
     };
-    localStorage.setItem(HAND_POSE_STORAGE_KEY, JSON.stringify(data));
-    console.log('Hand pose saved:', data);
-    alert('手部姿态设置已保存');
+    localStorage.setItem(storageKey, JSON.stringify(data));
+    console.log(`Hand pose saved (${modeLabel}):`, data);
+    alert(`手部姿态设置已保存（${modeLabel}模式）`);
 }
 
 function loadHandPoseTransform() {
-    const saved = localStorage.getItem(HAND_POSE_STORAGE_KEY);
+    const storageKey = getHandPoseStorageKey();
+    const modeLabel = useWorldCoordinates ? '世界坐标' : '设备坐标';
+    const saved = localStorage.getItem(storageKey);
     if (!saved) {
-        alert('没有找到已保存的设置');
+        alert(`没有找到已保存的设置（${modeLabel}模式）`);
         return false;
     }
 
@@ -2964,13 +3367,67 @@ function loadHandPoseTransform() {
         updateHandGripperMappingUI();
 
         const savedTime = data.savedAt ? new Date(data.savedAt).toLocaleString() : '未知';
-        console.log('Hand pose loaded:', data);
-        alert(`手部姿态设置已加载\n保存时间: ${savedTime}`);
+        console.log(`Hand pose loaded (${modeLabel}):`, data);
+        alert(`手部姿态设置已加载（${modeLabel}模式）\n保存时间: ${savedTime}`);
         return true;
     } catch (e) {
         console.error('Failed to load hand pose:', e);
         alert('加载设置失败: ' + e.message);
         return false;
+    }
+}
+
+// Auto-load saved settings for both modes (called on data load)
+function autoLoadHandPoseSettings() {
+    // Load device coordinates settings
+    const savedDevice = localStorage.getItem(HAND_POSE_STORAGE_KEY_DEVICE);
+    if (savedDevice) {
+        try {
+            const data = JSON.parse(savedDevice);
+            handPoseTransformDevice.posX = data.posX ?? 0;
+            handPoseTransformDevice.posY = data.posY ?? 0;
+            handPoseTransformDevice.posZ = data.posZ ?? 0;
+            handPoseTransformDevice.rotX = data.rotX ?? 0;
+            handPoseTransformDevice.rotY = data.rotY ?? 0;
+            handPoseTransformDevice.rotZ = data.rotZ ?? 0;
+            handPoseTransformDevice.scale = data.scale ?? 1;
+            console.log('Auto-loaded device coordinates hand pose settings');
+        } catch (e) {
+            console.warn('Failed to auto-load device hand pose settings:', e);
+        }
+    }
+
+    // Load world coordinates settings
+    const savedWorld = localStorage.getItem(HAND_POSE_STORAGE_KEY_WORLD);
+    if (savedWorld) {
+        try {
+            const data = JSON.parse(savedWorld);
+            handPoseTransformWorld.posX = data.posX ?? 0;
+            handPoseTransformWorld.posY = data.posY ?? 0;
+            handPoseTransformWorld.posZ = data.posZ ?? 0;
+            handPoseTransformWorld.rotX = data.rotX ?? 0;
+            handPoseTransformWorld.rotY = data.rotY ?? 0;
+            handPoseTransformWorld.rotZ = data.rotZ ?? 0;
+            handPoseTransformWorld.scale = data.scale ?? 1;
+            console.log('Auto-loaded world coordinates hand pose settings');
+        } catch (e) {
+            console.warn('Failed to auto-load world hand pose settings:', e);
+        }
+    }
+
+    // Load hand-gripper mapping from either (they share the same settings)
+    const savedAny = savedDevice || savedWorld;
+    if (savedAny) {
+        try {
+            const data = JSON.parse(savedAny);
+            if (data.handGripperMapping) {
+                handGripperMapping.enabled = data.handGripperMapping.enabled ?? true;
+                handGripperMapping.closeDistCm = data.handGripperMapping.closeDistCm ?? 2;
+                handGripperMapping.openDistCm = data.handGripperMapping.openDistCm ?? 10;
+            }
+        } catch (e) {
+            // Ignore
+        }
     }
 }
 
@@ -3094,32 +3551,10 @@ function initHandPoseControls() {
         });
     }
 
-    // Auto-load saved settings on page load (silently)
-    const saved = localStorage.getItem(HAND_POSE_STORAGE_KEY);
-    if (saved) {
-        try {
-            const data = JSON.parse(saved);
-            handPoseTransform.posX = data.posX ?? 0;
-            handPoseTransform.posY = data.posY ?? 0;
-            handPoseTransform.posZ = data.posZ ?? 0;
-            handPoseTransform.rotX = data.rotX ?? 0;
-            handPoseTransform.rotY = data.rotY ?? 0;
-            handPoseTransform.rotZ = data.rotZ ?? 0;
-            handPoseTransform.scale = data.scale ?? 1;
-
-            if (data.handGripperMapping) {
-                handGripperMapping.enabled = data.handGripperMapping.enabled ?? true;
-                handGripperMapping.closeDistCm = data.handGripperMapping.closeDistCm ?? 2;
-                handGripperMapping.openDistCm = data.handGripperMapping.openDistCm ?? 10;
-            }
-
-            updateHandPoseUI();
-            updateHandGripperMappingUI();
-            console.log('Auto-loaded saved hand pose settings');
-        } catch (e) {
-            console.warn('Failed to auto-load hand pose settings:', e);
-        }
-    }
+    // Auto-load saved settings for both modes on page load (silently)
+    autoLoadHandPoseSettings();
+    updateHandPoseUI();
+    updateHandGripperMappingUI();
 
     console.log('Hand pose controls initialized');
 }
@@ -3165,7 +3600,11 @@ function setJointAngle(jointName, angleDeg) {
     const initialTransform = gripperLinkInitialTransforms[linkName];
 
     if (!linkObj || !initialTransform) {
-        console.warn(`Link not found for joint ${jointName}: ${linkName}`);
+        // Only log once per missing link
+        if (jointName === 'gripper') {
+            console.warn(`Link not found for joint ${jointName}: ${linkName}`);
+            console.warn('Available links:', Object.keys(gripperLinkMap));
+        }
         return;
     }
 
@@ -3283,8 +3722,15 @@ function updateHandGripperMappingUI() {
  * @param {Array} landmarks - 21-point hand landmarks
  */
 function applyHandToGripper(landmarks) {
-    if (!handGripperMapping.enabled) return;
-    if (!landmarks || landmarks.length !== 21) return;
+    if (!handGripperMapping.enabled) {
+        console.log('Hand-gripper mapping disabled');
+        return;
+    }
+    if (!landmarks || landmarks.length !== 21) {
+        console.log('Invalid landmarks for gripper mapping, length:', landmarks?.length);
+        return;
+    }
+    console.log('applyHandToGripper called, enabled:', handGripperMapping.enabled);
 
     // Get thumb tip (index 0) and index tip (index 1) in MPS hand landmark format
     // Note: MPS uses different indices than MediaPipe
@@ -3292,7 +3738,10 @@ function applyHandToGripper(landmarks) {
     const thumbTip = landmarks[0];
     const indexTip = landmarks[1];
 
-    if (!thumbTip || !indexTip) return;
+    if (!thumbTip || !indexTip) {
+        console.debug('Thumb or index tip not found');
+        return;
+    }
 
     // Calculate distance
     const distance = Math.sqrt(
@@ -3303,6 +3752,12 @@ function applyHandToGripper(landmarks) {
 
     // Map to gripper angle
     const gripperAngle = mapFingerDistToGripperAngle(distance);
+
+    // Check if gripper link exists
+    const gripperLinkName = jointToLinkMapForSliders['gripper'];
+    if (!gripperLinkMap[gripperLinkName]) {
+        console.debug(`Gripper link not found: ${gripperLinkName}`);
+    }
 
     // Apply to gripper joint
     setJointAngle('gripper', gripperAngle);
@@ -3407,43 +3862,48 @@ function updateTimeline() {
 // Playback controls
 function startPlayback() {
     if (!handLandmarksData || handLandmarksData.right_hand.length === 0) return;
-    
+
     isPlaying = true;
     const playIcon = document.getElementById('play-icon');
     const playText = document.getElementById('play-text');
     if (playIcon) playIcon.textContent = '⏸';
     if (playText) playText.textContent = '暂停';
-    
-    const frameInterval = 100; // 100ms per frame = 10fps
-    const timeStep = (frameInterval / 1000) * playbackSpeed;
-    
+
+    // Read current speed from dropdown
+    const speedSelect = document.getElementById('playback-speed');
+    if (speedSelect) {
+        playbackSpeed = parseFloat(speedSelect.value) || 1;
+    }
+    console.log('Starting playback at speed:', playbackSpeed);
+
+    const baseInterval = 100; // Base interval in ms (10fps at 1x speed)
+
+    // Accumulator for fractional frame advancement
+    let frameAccumulator = 0;
+
     playInterval = setInterval(() => {
-        if (handTimestamps.length > 0) {
-            // Find next frame based on time
-            const currentTime = handTimestamps[Math.floor(currentFrameIndex)] || 0;
-            const nextTime = currentTime + timeStep;
-            
-            // Find frame index for next time
-            let nextIndex = currentFrameIndex;
-            for (let i = Math.floor(currentFrameIndex); i < handTimestamps.length; i++) {
-                if (handTimestamps[i] >= nextTime) {
-                    nextIndex = i;
-                    break;
-                }
-            }
-            
-            if (nextIndex >= handTimestamps.length - 1) {
-                nextIndex = 0; // Loop back
-            }
-            
-            currentFrameIndex = nextIndex;
-            updateTimeline();
-        } else {
-            // Fallback: simple frame increment
-            currentFrameIndex = (currentFrameIndex + 1) % handLandmarksData.right_hand.length;
+        // Read speed from dropdown each frame so changes take effect immediately
+        const speedSelect = document.getElementById('playback-speed');
+        if (speedSelect) {
+            playbackSpeed = parseFloat(speedSelect.value) || 1;
+        }
+
+        // Accumulate frames based on playback speed
+        // At 1x speed, we advance 1 frame per interval
+        // At 0.5x speed, we advance 0.5 frames per interval (need 2 intervals to advance 1 frame)
+        // At 2x speed, we advance 2 frames per interval
+        frameAccumulator += playbackSpeed;
+
+        // Only advance when we've accumulated at least 1 frame
+        if (frameAccumulator >= 1) {
+            const framesToAdvance = Math.floor(frameAccumulator);
+            frameAccumulator -= framesToAdvance; // Keep the fractional part
+
+            const totalFrames = handLandmarksData.right_hand.length;
+            currentFrameIndex = (Math.floor(currentFrameIndex) + framesToAdvance) % totalFrames;
             updateTimeline();
         }
-    }, frameInterval);
+    }, baseInterval);
 }
 
 function pausePlayback() {
@@ -3462,6 +3922,7 @@ function pausePlayback() {
 function stopPlayback() {
     pausePlayback();
     currentFrameIndex = 0;
+    lastIKFrameIndex = -1;  // Reset IK frame tracking so IK will compute on next play
     updateTimeline();
 }
 
@@ -3470,6 +3931,7 @@ const timelineSlider = document.getElementById('timeline-slider');
 if (timelineSlider) {
     timelineSlider.addEventListener('input', function(e) {
         currentFrameIndex = parseFloat(e.target.value);
+        lastIKFrameIndex = -1;  // Reset so IK will compute for new frame
         updateTimeline();
         // Force render
         renderGripperScene();
@@ -3535,11 +3997,13 @@ document.addEventListener('DOMContentLoaded', function() {
     urdfFileInput = document.getElementById('urdf_file');
     stlFilesInput = document.getElementById('stl_files');
     stlFolderInput = document.getElementById('stl_folder');
+    mpsFolderInput = document.getElementById('mps_folder');
     mpsFileInfo = document.getElementById('mps-file-info');
     hapticFileInfo = document.getElementById('haptic-file-info');
     urdfFileInfo = document.getElementById('urdf-file-info');
     stlFileInfo = document.getElementById('stl-file-info');
     stlFileList = document.getElementById('stl-file-list');
+    mpsFolderInfo = document.getElementById('mps-folder-info');
     loadBtn = document.getElementById('loadBtn');
     loadingIndicator = document.getElementById('loadingIndicator');
     visualizationSection = document.getElementById('visualizationSection');
@@ -3609,6 +4073,39 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
         console.log('STL folder input listener attached');
+    }
+
+    // Handle MPS folder input - load SLAM + hand tracking data
+    if (mpsFolderInput) {
+        mpsFolderInput.addEventListener('change', function(e) {
+            const allFiles = Array.from(e.target.files);
+            console.log(`MPS folder: found ${allFiles.length} files total`);
+
+            // Check for expected MPS folder structure
+            const slamFile = allFiles.find(f => f.webkitRelativePath.includes('slam/closed_loop_trajectory.csv'));
+            const handFile = allFiles.find(f => f.webkitRelativePath.includes('hand_tracking/hand_tracking_results.csv'));
+
+            if (slamFile || handFile) {
+                mpsFolderFiles = allFiles;
+                if (mpsFolderInfo) {
+                    const info = [];
+                    if (slamFile) info.push('SLAM');
+                    if (handFile) info.push('手部追踪');
+                    mpsFolderInfo.textContent = `已加载: ${info.join(' + ')}（世界坐标系）`;
+                    mpsFolderInfo.style.color = '#1565c0';
+                }
+                console.log(`✅ MPS 文件夹: SLAM=${!!slamFile}, Hand=${!!handFile}`);
+                checkFormValidity();
+            } else {
+                mpsFolderFiles = null;
+                if (mpsFolderInfo) {
+                    mpsFolderInfo.textContent = '未找到 slam/ 或 hand_tracking/ 目录';
+                    mpsFolderInfo.style.color = '#d32f2f';
+                }
+                console.warn('MPS 文件夹结构不正确');
+            }
+        });
+        console.log('MPS folder input listener attached');
     }
 
     // Handle auto folder input - automatically detect CSV, URDF, STL files
@@ -3771,6 +4268,8 @@ window.addEventListener('resize', function() {
 let ikTargetMarker = null;
 let ikChainLoaded = false;
 let lastIKResult = null;
+let ikFollowHand = false;  // Whether IK should follow hand position
+let lastIKFrameIndex = -1;  // Last frame index when IK was computed
 
 /**
  * Initialize IK control panel
@@ -3793,6 +4292,19 @@ function initIKControls() {
         showTargetCheckbox.addEventListener('change', function(e) {
             if (ikTargetMarker) {
                 ikTargetMarker.visible = e.target.checked;
+            }
+        });
+    }
+
+    // IK follow hand checkbox
+    const followHandCheckbox = document.getElementById('ik-follow-hand');
+    if (followHandCheckbox) {
+        followHandCheckbox.addEventListener('change', function(e) {
+            ikFollowHand = e.target.checked;
+            console.log('IK follow hand:', ikFollowHand);
+            if (ikFollowHand) {
+                // Immediately compute IK for current hand position
+                computeIKForCurrentHand();
             }
         });
     }
@@ -3892,6 +4404,10 @@ async function computeIK() {
     const targetY = parseFloat(document.getElementById('ik-target-y').value) || 0;
     const targetZ = parseFloat(document.getElementById('ik-target-z').value) || 0;
 
+    // Get solver settings
+    const solverMethod = document.getElementById('ik-solver-method')?.value || 'least_squares';
+    const maxIter = parseInt(document.getElementById('ik-max-iter')?.value) || 100;
+
     const statusDiv = document.getElementById('ik-status');
     const statusText = document.getElementById('ik-status-text');
     const errorText = document.getElementById('ik-position-error');
@@ -3900,7 +4416,7 @@ async function computeIK() {
 
     // Show status
     if (statusDiv) statusDiv.style.display = 'block';
-    if (statusText) statusText.textContent = '计算中...';
+    if (statusText) statusText.textContent = `计算中 (${solverMethod})...`;
     if (statusText) statusText.style.color = '#1976d2';
 
     // Update target marker position
@@ -3923,7 +4439,9 @@ async function computeIK() {
     try {
         // Prepare initial angles from last result for better convergence
         const requestBody = {
-            position: [targetX, targetY, targetZ]
+            position: [targetX, targetY, targetZ],
+            solver: solverMethod,
+            max_iter: maxIter
         };
 
         if (lastIKResult && lastIKResult.joint_angles) {
@@ -3943,7 +4461,7 @@ async function computeIK() {
 
             // Update status
             if (statusText) {
-                statusText.textContent = '✓ 计算成功';
+                statusText.textContent = `✓ ${result.solver_used || solverMethod}`;
                 statusText.style.color = '#2e7d32';
             }
             if (errorText) {
@@ -4045,7 +4563,7 @@ function applyJointAngles(jointNames, jointAngles) {
             // This applies the joint rotation in the local frame after the initial orientation
             linkGroup.quaternion.multiply(jointRotation);
 
-            console.log(`Applied ${jointName} -> ${linkName}: ${angle.toFixed(4)} rad (on top of initial transform)`);
+            // console.log(`Applied ${jointName} -> ${linkName}: ${angle.toFixed(4)} rad (on top of initial transform)`);
         }
     });
 }
@@ -4086,6 +4604,105 @@ function resetIK() {
     }
 
     console.log('IK reset to home position (restored initial transforms)');
+}
+
+/**
+ * Compute IK for current hand position (called when IK follow is enabled)
+ * Uses the same tracking point as trajectory (configurable in trajectory panel)
+ * Position is transformed using hand pose settings (world/device coordinates)
+ */
+async function computeIKForCurrentHand() {
+    if (!ikFollowHand || !ikChainLoaded) return;
+    if (!handLandmarksData || !handLandmarksData.right_hand) return;
+
+    const frameIndex = Math.floor(currentFrameIndex) % handLandmarksData.right_hand.length;
+
+    // Only compute IK when frame changes
+    if (frameIndex === lastIKFrameIndex) return;
+    lastIKFrameIndex = frameIndex;
+    const landmarks = handLandmarksData.right_hand[frameIndex];
+    if (!landmarks || landmarks.length < 21) return;
+
+    // Get the same tracking point as trajectory for consistency
+    const trackPointIdx = getTrackPointIndex(trajectorySettings.trackPoint);
+    const wrist = landmarks[5] || [0, 0, 0];
+    const trackPoint = landmarks[trackPointIdx];
+    if (!trackPoint) return;
+
+    // Apply hand pose transform to get the actual target position
+    const transformedPoint = applyHandPoseTransformToPoint(trackPoint, wrist);
+
+    // The transformedPoint is in Three.js world coordinates (Y-up)
+    // IK service expects URDF coordinates (Z-up)
+    // Robot root has rotation.x = -PI/2 to convert URDF to Three.js
+    // So we need the inverse: Three.js -> URDF
+    // Three.js (Y-up) -> URDF (Z-up): X stays, Y becomes Z, Z becomes -Y
+    const threeX = transformedPoint[0];
+    const threeY = transformedPoint[1];
+    const threeZ = transformedPoint[2];
+
+    // Convert to URDF coordinates for IK calculation
+    const urdfX = threeX;
+    const urdfY = -threeZ;
+    const urdfZ = threeY;
+
+    // Update IK target input fields (show URDF coordinates)
+    const ikTargetX = document.getElementById('ik-target-x');
+    const ikTargetY = document.getElementById('ik-target-y');
+    const ikTargetZ = document.getElementById('ik-target-z');
+    if (ikTargetX) ikTargetX.value = urdfX.toFixed(4);
+    if (ikTargetY) ikTargetY.value = urdfY.toFixed(4);
+    if (ikTargetZ) ikTargetZ.value = urdfZ.toFixed(4);
+
+    // Update target marker position in Three.js world coordinates
+    // When following hand, marker should be in world coordinates (scene space)
+    if (ikTargetMarker) {
+        // Make sure marker is in scene (world coordinates), not robot root
+        if (ikTargetMarker.parent !== gripperScene) {
+            if (ikTargetMarker.parent) {
+                ikTargetMarker.parent.remove(ikTargetMarker);
+            }
+            gripperScene.add(ikTargetMarker);
+        }
+        // Use Three.js coordinates for visual marker
+        ikTargetMarker.position.set(threeX, threeY, threeZ);
+        ikTargetMarker.visible = document.getElementById('show-ik-target')?.checked ?? true;
+    }
+
+    // Compute IK silently (without alert or status update spam)
+    try {
+        // Get solver settings from UI
+        const solverMethod = document.getElementById('ik-solver-method')?.value || 'least_squares';
+        const maxIter = parseInt(document.getElementById('ik-max-iter')?.value) || 100;
+
+        // Send URDF coordinates to IK service
+        const requestBody = {
+            position: [urdfX, urdfY, urdfZ],
+            solver: solverMethod,
+            max_iter: maxIter
+        };
+
+        if (lastIKResult && lastIKResult.joint_angles) {
+            requestBody.initial_angles = lastIKResult.joint_angles;
+        }
+
+        const response = await fetch('/ik', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            lastIKResult = result;
+            // Apply joint angles to the model
+            applyJointAngles(result.joint_names, result.joint_angles);
+        }
+    } catch (error) {
+        // Silently fail for continuous tracking
+        console.debug('IK computation error:', error);
+    }
 }
 
 // Initialize IK controls when visualization section becomes visible
@@ -4510,10 +5127,8 @@ function initHapticControls() {
     const enabledCheckbox = document.getElementById('haptic-enabled');
     const radiusSlider = document.getElementById('haptic-radius');
     const radiusValue = document.getElementById('haptic-radius-value');
-    const forceMinSlider = document.getElementById('haptic-force-min');
-    const forceMinValue = document.getElementById('haptic-force-min-value');
-    const forceMaxSlider = document.getElementById('haptic-force-max');
-    const forceMaxValue = document.getElementById('haptic-force-max-value');
+    const forceMinInput = document.getElementById('haptic-force-min');
+    const forceMaxInput = document.getElementById('haptic-force-max');
 
     if (enabledCheckbox) {
         enabledCheckbox.addEventListener('change', (e) => {
@@ -4532,28 +5147,24 @@ function initHapticControls() {
         });
     }
 
-    if (forceMinSlider) {
-        forceMinSlider.addEventListener('input', (e) => {
-            hapticSettings.forceMin = parseFloat(e.target.value);
-            if (forceMinValue) forceMinValue.textContent = hapticSettings.forceMin + 'N';
+    if (forceMinInput) {
+        forceMinInput.addEventListener('change', (e) => {
+            hapticSettings.forceMin = parseFloat(e.target.value) || 0;
             // 确保 min < max
             if (hapticSettings.forceMin >= hapticSettings.forceMax) {
                 hapticSettings.forceMax = hapticSettings.forceMin + 1;
-                if (forceMaxSlider) forceMaxSlider.value = hapticSettings.forceMax;
-                if (forceMaxValue) forceMaxValue.textContent = hapticSettings.forceMax + 'N';
+                if (forceMaxInput) forceMaxInput.value = hapticSettings.forceMax;
             }
         });
     }
 
-    if (forceMaxSlider) {
-        forceMaxSlider.addEventListener('input', (e) => {
-            hapticSettings.forceMax = parseFloat(e.target.value);
-            if (forceMaxValue) forceMaxValue.textContent = hapticSettings.forceMax + 'N';
+    if (forceMaxInput) {
+        forceMaxInput.addEventListener('change', (e) => {
+            hapticSettings.forceMax = parseFloat(e.target.value) || 10;
             // 确保 max > min
             if (hapticSettings.forceMax <= hapticSettings.forceMin) {
                 hapticSettings.forceMin = Math.max(0, hapticSettings.forceMax - 1);
-                if (forceMinSlider) forceMinSlider.value = hapticSettings.forceMin;
-                if (forceMinValue) forceMinValue.textContent = hapticSettings.forceMin + 'N';
+                if (forceMinInput) forceMinInput.value = hapticSettings.forceMin;
             }
         });
     }

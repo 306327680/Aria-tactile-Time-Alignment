@@ -273,6 +273,15 @@
                 <h2><span>📁</span> 上传文件</h2>
 
                 <form id="uploadForm" enctype="multipart/form-data">
+                    <!-- MPS Folder select (highest priority) -->
+                    <div style="margin-bottom: 12px; padding: 10px 15px; background: #e3f2fd; border-radius: 6px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                        <label for="mps_folder" style="padding: 6px 14px; background: #1976d2; color: white; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px;">
+                            📂 MPS 文件夹
+                            <input type="file" id="mps_folder" webkitdirectory directory multiple style="display: none;">
+                        </label>
+                        <span id="mps-folder-info" style="color: #1565c0; font-size: 0.85rem;">自动加载 SLAM + 手部追踪（世界坐标系）</span>
+                    </div>
+
                     <!-- Quick folder select -->
                     <div style="margin-bottom: 12px; padding: 10px 15px; background: #e8f5e9; border-radius: 6px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
                         <label for="auto_folder" style="padding: 6px 14px; background: #4caf50; color: white; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px;">
@@ -355,11 +364,16 @@
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <label style="font-weight: 500;">速度:</label>
                                 <select id="playback-speed" style="padding: 6px 12px; border: 1px solid #dee2e6; border-radius: 4px;">
+                                    <option value="0.01">0.01x</option>
+                                    <option value="0.02">0.02x</option>
+                                    <option value="0.05">0.05x</option>
+                                    <option value="0.1">0.1x</option>
                                     <option value="0.25">0.25x</option>
                                     <option value="0.5">0.5x</option>
                                     <option value="1" selected>1x</option>
                                     <option value="2">2x</option>
                                     <option value="4">4x</option>
+                                    <option value="10">10x</option>
                                 </select>
                             </div>
                         </div>
@@ -411,10 +425,43 @@
                             </div>
                         </div>
 
+                        <!-- Trajectory display controls (only for world coordinates mode) -->
+                        <div id="trajectory-panel" style="padding: 10px; background: #e3f2fd; border-radius: 6px; margin-bottom: 12px; display: none;">
+                            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.8rem;">
+                                <label style="font-weight: 600; color: #1565c0;">📍 轨迹显示:</label>
+                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                                    <input type="checkbox" id="show-trajectory" checked>
+                                    <span>显示轨迹</span>
+                                </label>
+                                <span style="color: #90caf9;">|</span>
+                                <label style="display: flex; align-items: center; gap: 4px;">
+                                    <span>时长</span>
+                                    <input type="number" id="trajectory-duration" value="10" min="1" max="60" step="1" style="width: 50px; padding: 3px 4px;">
+                                    <span style="color: #999;">秒</span>
+                                </label>
+                                <span style="color: #90caf9;">|</span>
+                                <label style="display: flex; align-items: center; gap: 4px;">
+                                    <span>追踪点</span>
+                                    <select id="trajectory-point" style="padding: 3px 4px; font-size: 0.8rem;">
+                                        <option value="wrist">手腕</option>
+                                        <option value="thumb">拇指尖</option>
+                                        <option value="index" selected>食指尖</option>
+                                        <option value="middle">中指尖</option>
+                                        <option value="palm">掌心</option>
+                                    </select>
+                                </label>
+                                <span style="color: #90caf9;">|</span>
+                                <label style="display: flex; align-items: center; gap: 4px;">
+                                    <span>线宽</span>
+                                    <input type="range" id="trajectory-width" min="1" max="10" value="3" style="width: 60px;">
+                                </label>
+                            </div>
+                        </div>
+
                         <!-- Hand pose controls -->
-                        <div style="padding: 10px; background: #f0f4f8; border-radius: 6px; margin-bottom: 12px;">
+                        <div id="hand-pose-panel" style="padding: 10px; background: #f0f4f8; border-radius: 6px; margin-bottom: 12px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                                <label style="font-weight: 600; font-size: 0.85rem;">✋ 手部姿态:</label>
+                                <label style="font-weight: 600; font-size: 0.85rem;">✋ 手部姿态 <span id="hand-pose-mode-label" style="font-weight: normal; color: #666;">(设备坐标)</span>:</label>
                                 <div style="display: flex; gap: 4px;">
                                     <button id="hand-pose-save-btn" style="padding: 2px 8px; background: #4caf50; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">存</button>
                                     <button id="hand-pose-load-btn" style="padding: 2px 8px; background: #2196f3; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">读</button>
@@ -512,10 +559,27 @@
                         <div class="controls-panel" id="ik-panel" style="padding: 8px 12px; background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%); border: 1px solid #c8e6c9; border-radius: 8px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                                 <h3 style="color: #2e7d32; margin: 0; font-size: 0.9rem;">🎯 IK</h3>
-                                <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.7rem; color: #558b2f;">
-                                    <input type="checkbox" id="show-ik-target" checked>
-                                    <span>目标球</span>
-                                </label>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.7rem; color: #1565c0; background: #e3f2fd; padding: 2px 6px; border-radius: 3px;" title="机械臂跟随手部末端位置">
+                                        <input type="checkbox" id="ik-follow-hand">
+                                        <span>跟随手</span>
+                                    </label>
+                                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.7rem; color: #558b2f;">
+                                        <input type="checkbox" id="show-ik-target" checked>
+                                        <span>目标球</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <!-- 解算方式选择 -->
+                            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+                                <span style="font-size: 0.7rem; color: #666;">解算:</span>
+                                <select id="ik-solver-method" style="padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.7rem; background: white;">
+                                    <option value="least_squares">最小二乘 (默认)</option>
+                                    <option value="scalar">标量优化</option>
+                                    <option value="CCD">CCD (快速迭代)</option>
+                                </select>
+                                <span style="font-size: 0.7rem; color: #666;">迭代:</span>
+                                <input type="number" id="ik-max-iter" value="100" min="10" max="1000" step="10" style="width: 50px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.7rem;" title="最大迭代次数">
                             </div>
                             <!-- 目标位置 + 计算按钮 (单行紧凑) -->
                             <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
@@ -566,13 +630,13 @@
                                 </div>
                                 <div style="display: flex; align-items: center; gap: 4px;">
                                     <span style="color: #4caf50;">绿</span>
-                                    <input type="range" id="haptic-force-min" min="0" max="50" value="0" step="1" style="width: 40px;">
-                                    <span id="haptic-force-min-value" style="min-width: 22px;">0N</span>
+                                    <input type="number" id="haptic-force-min" value="0" step="1" min="0" style="width: 45px; padding: 2px 4px; border: 1px solid #a5d6a7; border-radius: 3px; font-size: 0.7rem;">
+                                    <span style="color: #999;">N</span>
                                 </div>
                                 <div style="display: flex; align-items: center; gap: 4px;">
                                     <span style="color: #f44336;">红</span>
-                                    <input type="range" id="haptic-force-max" min="1" max="100" value="10" step="1" style="width: 40px;">
-                                    <span id="haptic-force-max-value" style="min-width: 22px;">10N</span>
+                                    <input type="number" id="haptic-force-max" value="10" step="1" min="1" style="width: 45px; padding: 2px 4px; border: 1px solid #ffcdd2; border-radius: 3px; font-size: 0.7rem;">
+                                    <span style="color: #999;">N</span>
                                 </div>
                             </div>
                         </div>

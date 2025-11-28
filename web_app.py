@@ -899,6 +899,10 @@ def gripper():
 def gripper_data():
     """Load data for gripper visualization"""
     try:
+        # Check for MPS folder first (highest priority)
+        mps_folder_path = request.form.get('mps_folder_path')
+        mps_folder_files = request.files.getlist('mps_folder_files')
+
         # MPS file is optional (for testing display without hand data)
         mps_file = request.files.get('mps_file')
         haptic_file = request.files.get('haptic_file')  # Haptic sensor data
@@ -906,15 +910,57 @@ def gripper_data():
         stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
 
         # Check if at least one file type is provided
+        has_mps_folder = len(mps_folder_files) > 0
         has_mps = mps_file and mps_file.filename != ''
         has_haptic = haptic_file and haptic_file.filename != ''
         has_urdf = urdf_file and urdf_file.filename != ''
         has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
 
-        print(f"File upload check: mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
+        print(f"File upload check: mps_folder={has_mps_folder}, mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
 
-        if not (has_mps or has_urdf or has_stl):
-            return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
+        # Allow loading with just MPS folder, or any combination of other files
+        if not (has_mps_folder or has_mps or has_haptic or has_urdf or has_stl):
+            return jsonify({'error': '请至少上传以下之一：MPS 文件夹、MPS CSV、触觉 CSV、URDF 或 STL 文件'}), 400
+
+        # Process MPS folder if provided (highest priority for hand data)
+        hand_landmarks_data = None
+        slam_trajectory = None
+        world_coordinates = False
+
+        if has_mps_folder:
+            try:
+                # Save MPS folder files to temp directory
+                mps_temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'mps_folder')
+                os.makedirs(mps_temp_dir, exist_ok=True)
+
+                for f in mps_folder_files:
+                    if f.filename:
+                        # Preserve folder structure
+                        rel_path = f.filename
+                        full_path = os.path.join(mps_temp_dir, rel_path)
+                        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                        f.save(full_path)
+
+                # Load MPS folder data
+                from app.utils.mps_folder_loader import load_mps_folder
+                mps_data = load_mps_folder(mps_temp_dir)
+
+                if mps_data.get('hand_landmarks'):
+                    hand_landmarks_data = mps_data['hand_landmarks']
+                    world_coordinates = mps_data.get('world_coordinates', False)
+                    print(f"MPS folder: loaded hand landmarks, world_coordinates={world_coordinates}")
+
+                if mps_data.get('slam_data'):
+                    slam_trajectory = {
+                        'positions': mps_data['slam_data']['positions'].tolist(),
+                        'timestamps': (mps_data['slam_data']['timestamps_us'] / 1e6).tolist()
+                    }
+                    print(f"MPS folder: loaded SLAM trajectory with {len(slam_trajectory['positions'])} poses")
+
+            except Exception as e:
+                import traceback
+                print(f"Warning: Failed to load MPS folder: {e}")
+                print(traceback.format_exc())
 
         # Save MPS file if provided
         mps_path = None
@@ -991,9 +1037,8 @@ def gripper_data():
                     stl_urls.append(f'/uploaded_stl/{filename}')
                     stl_filenames.append(filename)
 
-        # Load hand landmarks data from MPS CSV (if provided)
-        hand_landmarks_data = None
-        if mps_path:
+        # Load hand landmarks data from MPS CSV (if provided and not already loaded from MPS folder)
+        if mps_path and hand_landmarks_data is None:
             try:
                 hand_landmarks_data = load_hand_landmarks(mps_path)
             except Exception as e:
@@ -1031,7 +1076,9 @@ def gripper_data():
             'stl_urls': stl_urls,
             'stl_file_map': stl_file_map,
             'ik_available': IKPY_AVAILABLE,
-            'ik_loaded': ik_loaded
+            'ik_loaded': ik_loaded,
+            'world_coordinates': world_coordinates,  # Whether hand data is in world coordinates
+            'slam_trajectory': slam_trajectory  # SLAM trajectory (if available)
         }
 
         # Add URDF data if available
@@ -1137,6 +1184,61 @@ def load_ik_chain(urdf_path: str, base_link: str = "base_link", end_link: str = 
     return ik_chain
 
 
+def ccd_ik(chain, target_position, initial_angles=None, max_iter=100, tolerance=1e-4):
+    """
+    Cyclic Coordinate Descent (CCD) IK solver.
+    Fast iterative method that adjusts one joint at a time.
+    """
+    if initial_angles is None:
+        angles = np.zeros(len(chain.links))
+    else:
+        angles = initial_angles.copy()
+
+    for iteration in range(max_iter):
+        # Get current end effector position
+        fk = chain.forward_kinematics(angles)
+        end_pos = fk[:3, 3]
+        error = np.linalg.norm(target_position - end_pos)
+
+        if error < tolerance:
+            break
+
+        # Iterate through active joints from end to base
+        for i in reversed(range(len(chain.links))):
+            link = chain.links[i]
+            if not hasattr(link, 'joint_type') or link.joint_type == 'fixed':
+                continue
+
+            # Get joint position
+            partial_angles = angles.copy()
+            partial_fk = chain.forward_kinematics(partial_angles)
+
+            # Calculate rotation axis (simplified - assumes revolute joints around Z)
+            joint_pos = partial_fk[:3, 3]
+
+            # Vector from joint to end effector
+            to_end = end_pos - joint_pos
+            # Vector from joint to target
+            to_target = target_position - joint_pos
+
+            # Calculate angle adjustment
+            if np.linalg.norm(to_end) > 1e-6 and np.linalg.norm(to_target) > 1e-6:
+                to_end_norm = to_end / np.linalg.norm(to_end)
+                to_target_norm = to_target / np.linalg.norm(to_target)
+                dot = np.clip(np.dot(to_end_norm, to_target_norm), -1, 1)
+                angle_diff = np.arccos(dot)
+                cross = np.cross(to_end_norm, to_target_norm)
+                if cross[2] < 0:
+                    angle_diff = -angle_diff
+                angles[i] += angle_diff * 0.5  # Damping factor
+
+            # Update end effector position
+            fk = chain.forward_kinematics(angles)
+            end_pos = fk[:3, 3]
+
+    return angles
+
+
 @app.route('/ik', methods=['POST', 'OPTIONS'])
 def compute_ik():
     """
@@ -1147,6 +1249,8 @@ def compute_ik():
             "position": [x, y, z],             # Required: target position in meters
             "orientation": [roll, pitch, yaw], # Optional: target orientation in radians
             "initial_angles": [...]            # Optional: initial guess
+            "solver": "L-BFGS-B"               # Optional: solver method
+            "max_iter": 100                    # Optional: max iterations
         }
 
     Response JSON:
@@ -1155,7 +1259,8 @@ def compute_ik():
             "joint_angles": [...],
             "joint_names": [...],
             "end_position": [x, y, z],
-            "position_error": float
+            "position_error": float,
+            "solver_used": string
         }
     """
     if request.method == 'OPTIONS':
@@ -1189,6 +1294,10 @@ def compute_ik():
                 'error': 'Position must be [x, y, z]'
             }), 400
 
+        # Parse solver method
+        solver_method = data.get('solver', 'L-BFGS-B')
+        max_iter = int(data.get('max_iter', 100))
+
         # Parse optional orientation
         target_orientation = None
         if 'orientation' in data:
@@ -1205,21 +1314,38 @@ def compute_ik():
             for idx, angle in zip(ik_active_indices, active_angles):
                 initial_angles[idx] = angle
 
-        # Compute IK
-        if target_orientation is not None:
+        # Compute IK with selected solver
+        # ikpy only supports: "least_squares" (default) and "scalar"
+        solver_used = solver_method
+        if solver_method not in ['least_squares', 'scalar', 'CCD']:
+            solver_method = 'least_squares'  # fallback to default
+
+        if solver_method == 'CCD':
+            # Use custom CCD solver
+            result_angles = ccd_ik(
+                ik_chain,
+                target_position,
+                initial_angles=initial_angles,
+                max_iter=max_iter
+            )
+        elif target_orientation is not None:
             target_frame = np.eye(4)
             target_frame[:3, :3] = target_orientation
             target_frame[:3, 3] = target_position
             result_angles = ik_chain.inverse_kinematics(
                 target_frame,
                 initial_position=initial_angles,
-                orientation_mode="all"
+                orientation_mode="all",
+                optimizer=solver_method,
+                max_iter=max_iter
             )
         else:
             result_angles = ik_chain.inverse_kinematics(
                 target_position,
                 initial_position=initial_angles,
-                orientation_mode=None
+                orientation_mode=None,
+                optimizer=solver_method,
+                max_iter=max_iter
             )
 
         # Compute achieved position
@@ -1236,7 +1362,9 @@ def compute_ik():
             'joint_names': ik_joint_names,
             'full_angles': result_angles.tolist(),
             'end_position': achieved_position,
-            'position_error': float(position_error)
+            'position_error': float(position_error),
+            'solver_used': solver_used,
+            'max_iter': max_iter
         })
 
     except Exception as e:

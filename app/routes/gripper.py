@@ -13,6 +13,7 @@ from app.utils.urdf_parser import parse_urdf
 from app.utils.mps_loader import load_hand_landmarks
 from app.utils.haptic_loader import load_haptic_data
 from app.utils.file_utils import allowed_file
+from app.utils.mps_folder_loader import load_slam_trajectory, load_hand_tracking_device, transform_to_world
 
 
 bp = Blueprint('gripper', __name__, url_prefix='/gripper')
@@ -33,6 +34,11 @@ def index():
 def gripper_data():
     """Load data for gripper visualization"""
     try:
+        # MPS folder files (highest priority - world coordinates)
+        use_mps_folder = request.form.get('use_mps_folder') == 'true'
+        slam_file = request.files.get('slam_file')
+        hand_tracking_file = request.files.get('hand_tracking_file')
+
         # MPS file is optional (for testing display without hand data)
         mps_file = request.files.get('mps_file')
         haptic_file = request.files.get('haptic_file')
@@ -40,17 +46,18 @@ def gripper_data():
         stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
 
         # Check if at least one file type is provided
+        has_mps_folder = use_mps_folder and (slam_file or hand_tracking_file)
         has_mps = mps_file and mps_file.filename != ''
         has_haptic = haptic_file and haptic_file.filename != ''
         has_urdf = urdf_file and urdf_file.filename != ''
         has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
 
-        print(f"File upload check: mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
+        print(f"File upload check: mps_folder={has_mps_folder}, mps={has_mps}, haptic={has_haptic}, urdf={has_urdf}, stl={has_stl}")
         if haptic_file:
             print(f"Haptic file info: filename='{haptic_file.filename}'")
 
-        if not (has_mps or has_urdf or has_stl):
-            return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
+        if not (has_mps_folder or has_mps or has_urdf or has_stl):
+            return jsonify({'error': '请至少上传以下文件之一：MPS 文件夹（SLAM + 手部追踪）、MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
 
         # Save MPS file if provided
         mps_path = None
@@ -147,9 +154,58 @@ def gripper_data():
                     stl_urls.append(f'/gripper/uploaded_stl/{filename}')
                     stl_filenames.append(filename)
 
-        # Load hand landmarks data from MPS CSV (if provided)
+        # Load hand landmarks data
         hand_landmarks_data = None
-        if mps_path:
+        world_coordinates = False
+        slam_trajectory = None
+
+        # Priority 1: MPS folder (SLAM + hand tracking -> world coordinates)
+        if has_mps_folder:
+            try:
+                slam_data = None
+                hand_data = None
+
+                # Save and load SLAM file
+                if slam_file and slam_file.filename:
+                    slam_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(slam_file.filename))
+                    slam_file.save(slam_path)
+                    slam_data = load_slam_trajectory(slam_path)
+                    print(f"Loaded SLAM trajectory: {len(slam_data['timestamps_us'])} poses")
+
+                # Save and load hand tracking file
+                if hand_tracking_file and hand_tracking_file.filename:
+                    hand_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(hand_tracking_file.filename))
+                    hand_tracking_file.save(hand_path)
+                    hand_data = load_hand_tracking_device(hand_path)
+                    print(f"Loaded hand tracking: {len(hand_data['timestamps_us'])} frames")
+
+                # Transform to world coordinates if both are available
+                if slam_data and hand_data:
+                    world_data = transform_to_world(hand_data, slam_data)
+                    hand_landmarks_data = {
+                        'timestamps': world_data['timestamps'],
+                        'right_hand': world_data['right_hand'],
+                        'left_hand': world_data['left_hand']
+                    }
+                    slam_trajectory = world_data['slam_trajectory']
+                    world_coordinates = True
+                    print(f"Transformed to world coordinates: {len(world_data['timestamps'])} frames")
+                elif hand_data:
+                    # No SLAM, use device coordinates
+                    hand_landmarks_data = {
+                        'timestamps': (hand_data['timestamps_us'] / 1e6).tolist(),
+                        'right_hand': hand_data['right_hand_device'],
+                        'left_hand': hand_data['left_hand_device']
+                    }
+                    print("Using device coordinates (no SLAM data)")
+
+            except Exception as e:
+                import traceback
+                print(f"Warning: Failed to load MPS folder data: {e}")
+                print(traceback.format_exc())
+
+        # Priority 2: MPS CSV file (legacy format)
+        elif mps_path:
             try:
                 hand_landmarks_data = load_hand_landmarks(mps_path)
             except Exception as e:
@@ -176,6 +232,8 @@ def gripper_data():
         result = {
             'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
             'haptic_data': haptic_data,  # Can be None if no haptic file
+            'world_coordinates': world_coordinates,  # True if using SLAM-transformed coordinates
+            'slam_trajectory': slam_trajectory,  # Device trajectory in world coordinates
             'stl_files': stl_filenames,
             'stl_urls': stl_urls,
             'stl_file_map': stl_file_map,
