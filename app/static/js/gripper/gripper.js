@@ -859,10 +859,10 @@ async function loadManoModel() {
 
     manoLoadingPromise = (async () => {
     try {
-        // 并行加载OBJ和JSON（使用拟合后的模型）
+        // 并行加载OBJ和JSON
         const [objResponse, jsonResponse] = await Promise.all([
-            fetch('/static/models/mano_right_fitted.obj'),
-            fetch('/static/models/mano_right_fitted.json')
+            fetch('/static/models/mano_right.obj'),
+            fetch('/static/models/mano_right.json')
         ]);
 
         if (!objResponse.ok || !jsonResponse.ok) {
@@ -4199,4 +4199,148 @@ document.addEventListener('DOMContentLoaded', function() {
             debugTestManoBasicMaterial();
         });
     }
+
+    // 绑定 MANO Shape 拟合按钮
+    const fitManoBtn = document.getElementById('fit-mano-btn');
+    if (fitManoBtn) {
+        fitManoBtn.addEventListener('click', fitManoShape);
+    }
 });
+
+/**
+ * MANO Shape 拟合功能
+ * 从当前加载的 MPS 数据拟合 MANO shape 参数
+ */
+async function fitManoShape() {
+    // 检查是否有 MPS 文件
+    const mpsFileInput = document.getElementById('mps_file');
+    if (!mpsFileInput || !mpsFileInput.files || mpsFileInput.files.length === 0) {
+        alert('请先选择 MPS CSV 文件');
+        return;
+    }
+
+    const mpsFile = mpsFileInput.files[0];
+    const fitBtn = document.getElementById('fit-mano-btn');
+
+    // 显示进度
+    const originalText = fitBtn.textContent;
+    fitBtn.textContent = '拟合中...';
+    fitBtn.disabled = true;
+    fitBtn.style.background = '#ccc';
+
+    try {
+        // 创建 FormData
+        const formData = new FormData();
+        formData.append('mps_file', mpsFile);
+        formData.append('hand', 'right');
+        formData.append('iterations', '500');
+
+        // 发送请求
+        const response = await fetch('/gripper/fit_mano_shape', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || result.error) {
+            throw new Error(result.error || '拟合失败');
+        }
+
+        // 显示结果
+        let message = `✅ MANO Shape 拟合完成\n\n`;
+
+        if (result.comparison) {
+            message += `大拇指/食指比例对比:\n`;
+            message += `  MPS: ${result.comparison.mps_ratio?.toFixed(3) || '-'}\n`;
+            message += `  MANO原始: ${result.comparison.mano_original_ratio?.toFixed(3) || '-'}\n`;
+            message += `  MANO拟合: ${result.comparison.mano_fitted_ratio?.toFixed(3) || '-'}\n\n`;
+        }
+
+        if (result.betas) {
+            message += `Shape参数 (betas):\n`;
+            message += `  [${result.betas.map(b => b.toFixed(2)).join(', ')}]\n\n`;
+        }
+
+        message += `输出文件:\n`;
+        message += `  ${result.obj_url}\n`;
+        message += `  ${result.json_url}\n\n`;
+
+        message += `是否切换到拟合后的模型？`;
+
+        if (confirm(message)) {
+            // 重新加载 MANO 模型
+            await reloadManoModel(result.obj_url, result.json_url);
+            console.log('Switched to fitted MANO model');
+        }
+
+    } catch (error) {
+        console.error('MANO shape fitting error:', error);
+        alert(`拟合失败: ${error.message}`);
+    } finally {
+        // 恢复按钮
+        fitBtn.textContent = originalText;
+        fitBtn.disabled = false;
+        fitBtn.style.background = '#9c27b0';
+    }
+}
+
+/**
+ * 重新加载 MANO 模型
+ */
+async function reloadManoModel(objUrl, jsonUrl) {
+    try {
+        // 加载新的 OBJ 和 JSON
+        const [objResponse, jsonResponse] = await Promise.all([
+            fetch(objUrl),
+            fetch(jsonUrl)
+        ]);
+
+        if (!objResponse.ok || !jsonResponse.ok) {
+            throw new Error('Failed to load fitted MANO model files');
+        }
+
+        // 解析 JSON
+        manoData = await jsonResponse.json();
+
+        // 解析 OBJ
+        const objText = await objResponse.text();
+
+        if (typeof THREE.OBJLoader === 'undefined') {
+            console.warn('OBJLoader not available');
+            return;
+        }
+
+        const loader = new THREE.OBJLoader();
+        const obj = loader.parse(objText);
+
+        // 获取新 mesh
+        let newMesh = null;
+        obj.traverse(child => {
+            if (child instanceof THREE.Mesh) {
+                newMesh = child;
+            }
+        });
+
+        if (!newMesh) {
+            throw new Error('No mesh found in fitted OBJ');
+        }
+
+        // 复制 geometry
+        if (manoMesh) {
+            manoMesh.geometry.dispose();
+            manoMesh.geometry = newMesh.geometry.clone();
+
+            // 保存初始顶点
+            manoRestVertices = new Float32Array(manoMesh.geometry.attributes.position.array);
+
+            console.log('MANO model reloaded with fitted shape');
+        }
+
+    } catch (error) {
+        console.error('Error reloading MANO model:', error);
+        throw error;
+    }
+}
+window.fitManoShape = fitManoShape;
+window.reloadManoModel = reloadManoModel;

@@ -3,6 +3,8 @@ Gripper visualization routes
 """
 
 import os
+import subprocess
+import sys
 from flask import Blueprint, render_template, request, jsonify, send_file, current_app
 from werkzeug.utils import secure_filename
 
@@ -13,6 +15,11 @@ from app.utils.file_utils import allowed_file
 
 
 bp = Blueprint('gripper', __name__, url_prefix='/gripper')
+
+
+# Path to the MANO shape fitting script
+MANO_FIT_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                               'scripts', 'fit_mano_shape_simple.py')
 
 
 @bp.route('/')
@@ -176,4 +183,134 @@ def uploaded_stl(filename):
             return jsonify({'error': 'STL file not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/fit_mano_shape', methods=['POST'])
+def fit_mano_shape():
+    """
+    Fit MANO shape parameters from MPS landmarks.
+    Expects a MPS CSV file upload.
+    Returns the fitted model files.
+    """
+    try:
+        mps_file = request.files.get('mps_file')
+        hand = request.form.get('hand', 'right')
+        iterations = request.form.get('iterations', '500')
+
+        if not mps_file or mps_file.filename == '':
+            return jsonify({'error': '请上传 MPS CSV 文件'}), 400
+
+        # Save uploaded file
+        mps_filename = secure_filename(mps_file.filename)
+        mps_path = os.path.join(current_app.config['UPLOAD_FOLDER'], mps_filename)
+        mps_file.save(mps_path)
+
+        # Check if script exists
+        if not os.path.exists(MANO_FIT_SCRIPT):
+            return jsonify({'error': f'拟合脚本不存在: {MANO_FIT_SCRIPT}'}), 500
+
+        # Run the fitting script
+        python_exe = sys.executable
+        cmd = [
+            python_exe,
+            MANO_FIT_SCRIPT,
+            '--mps', mps_path,
+            '--hand', hand,
+            '--iterations', iterations
+        ]
+
+        print(f"Running MANO shape fitting: {' '.join(cmd)}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minutes timeout
+        )
+
+        # Parse output
+        output = result.stdout + result.stderr
+
+        if result.returncode != 0:
+            return jsonify({
+                'error': '拟合失败',
+                'details': output
+            }), 500
+
+        # Check if output files exist
+        output_obj = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                  'app', 'static', 'models', 'mano_right_fitted.obj')
+        output_json = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                   'app', 'static', 'models', 'mano_right_fitted.json')
+
+        if not os.path.exists(output_obj) or not os.path.exists(output_json):
+            return jsonify({
+                'error': '拟合完成但输出文件未生成',
+                'details': output
+            }), 500
+
+        # Extract betas and comparison info from output
+        betas = None
+        comparison = {}
+        for line in output.split('\n'):
+            if 'Fitted betas:' in line:
+                try:
+                    betas_str = line.split('[')[1].split(']')[0]
+                    betas = [float(x.strip()) for x in betas_str.split()]
+                except:
+                    pass
+            elif 'Thumb/Index ratio - MPS:' in line:
+                try:
+                    comparison['mps_ratio'] = float(line.split(':')[1].strip())
+                except:
+                    pass
+            elif 'Thumb/Index ratio - MANO (original):' in line:
+                try:
+                    comparison['mano_original_ratio'] = float(line.split(':')[1].strip())
+                except:
+                    pass
+            elif 'Thumb/Index ratio - MANO (fitted):' in line:
+                try:
+                    comparison['mano_fitted_ratio'] = float(line.split(':')[1].strip())
+                except:
+                    pass
+
+        return jsonify({
+            'success': True,
+            'message': 'MANO shape 拟合完成',
+            'betas': betas,
+            'comparison': comparison,
+            'obj_url': '/static/models/mano_right_fitted.obj',
+            'json_url': '/static/models/mano_right_fitted.json',
+            'output': output
+        })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': '拟合超时（超过5分钟）'}), 500
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@bp.route('/mano_models')
+def list_mano_models():
+    """List available MANO model files"""
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                              'static', 'models')
+
+    models = []
+    if os.path.exists(models_dir):
+        for f in os.listdir(models_dir):
+            if f.endswith('.obj'):
+                json_file = f.replace('.obj', '.json')
+                models.append({
+                    'name': f.replace('.obj', ''),
+                    'obj': f'/static/models/{f}',
+                    'json': f'/static/models/{json_file}' if os.path.exists(os.path.join(models_dir, json_file)) else None
+                })
+
+    return jsonify({'models': models})
 
