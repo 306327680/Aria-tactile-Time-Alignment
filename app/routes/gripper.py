@@ -11,6 +11,7 @@ from werkzeug.utils import secure_filename
 from aria_haptic_align import ARIA_API_AVAILABLE
 from app.utils.urdf_parser import parse_urdf
 from app.utils.mps_loader import load_hand_landmarks
+from app.utils.haptic_loader import load_haptic_data
 from app.utils.file_utils import allowed_file
 
 
@@ -34,14 +35,16 @@ def gripper_data():
     try:
         # MPS file is optional (for testing display without hand data)
         mps_file = request.files.get('mps_file')
+        haptic_file = request.files.get('haptic_file')
         urdf_file = request.files.get('urdf_file')
         stl_files = request.files.getlist('stl_files')  # Multiple STL files (for manual upload)
 
         # Check if at least one file type is provided
         has_mps = mps_file and mps_file.filename != ''
+        has_haptic = haptic_file and haptic_file.filename != ''
         has_urdf = urdf_file and urdf_file.filename != ''
         has_stl = any(stl_file and stl_file.filename != '' for stl_file in stl_files)
-        
+
         if not (has_mps or has_urdf or has_stl):
             return jsonify({'error': '请至少上传以下文件之一：MPS CSV（手部数据）、URDF 或 STL（夹爪模型）'}), 400
 
@@ -50,6 +53,12 @@ def gripper_data():
         if has_mps:
             mps_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(mps_file.filename))
             mps_file.save(mps_path)
+
+        # Save haptic file if provided
+        haptic_path = None
+        if has_haptic:
+            haptic_path = os.path.join(current_app.config['UPLOAD_FOLDER'], secure_filename(haptic_file.filename))
+            haptic_file.save(haptic_path)
 
         # Process URDF file if provided
         urdf_data = None
@@ -143,9 +152,19 @@ def gripper_data():
                 print(f"Warning: Failed to load hand landmarks from MPS file: {e}")
                 hand_landmarks_data = None
 
+        # Load haptic data (if provided)
+        haptic_data = None
+        if haptic_path:
+            try:
+                haptic_data = load_haptic_data(haptic_path)
+            except Exception as e:
+                print(f"Warning: Failed to load haptic data: {e}")
+                haptic_data = None
+
         # Return data
         result = {
             'hand_landmarks': hand_landmarks_data,  # Can be None if no MPS file
+            'haptic_data': haptic_data,  # Can be None if no haptic file
             'stl_files': stl_filenames,
             'stl_urls': stl_urls,
             'stl_file_map': stl_file_map,

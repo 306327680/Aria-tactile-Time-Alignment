@@ -37,7 +37,9 @@ let gripperLinkMap = {};  // Map link names to Three.js objects
 let gripperLinkInitialTransforms = {};  // Store initial transforms for reset
 let urdfData = null;  // Parsed URDF data
 let handLandmarksData = null;
+let hapticData = null;  // Haptic sensor data
 let handTimestamps = [];  // Timestamps for each frame
+let hapticTimestamps = [];  // Haptic timestamps
 let currentFrameIndex = 0;
 let animationId = null;
 let isPlaying = false;
@@ -2068,6 +2070,12 @@ function renderGripperScene() {
 
     // Render mapped hand (landmarks or mesh based on view mode)
     renderHandVisualization(gripperScene, mapped.landmarks, true);
+
+    // Update haptic colors on MANO mesh if haptic data is available
+    if (hapticData && handTimestamps.length > 0) {
+        const currentTime = handTimestamps[frameIndex] || 0;
+        updateManoHapticColors(currentTime);
+    }
 }
 
 // Animation loop - always runs for camera controls
@@ -2110,7 +2118,9 @@ let mpsFileInput;
 let urdfFileInput;
 let stlFilesInput;
 let stlFolderInput;
+let hapticFileInput;
 let mpsFileInfo;
+let hapticFileInfo;
 let urdfFileInfo;
 let stlFileInfo;
 let stlFileList;
@@ -2157,6 +2167,24 @@ function handleUrdfFileChange(e) {
         }
         saveFileInfo(); // Save to localStorage
         checkFormValidity(); // Check if button should be enabled
+    }
+}
+
+function handleHapticFileChange(e) {
+    if (e.target.files.length > 0) {
+        const file = e.target.files[0];
+        if (hapticFileInfo) {
+            hapticFileInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+            hapticFileInfo.style.color = '#28a745';
+            hapticFileInfo.style.fontStyle = 'normal';
+        }
+        saveFileInfo(); // Save to localStorage
+    } else {
+        if (hapticFileInfo) {
+            hapticFileInfo.textContent = '未选择';
+            hapticFileInfo.style.color = '#6c757d';
+        }
+        saveFileInfo(); // Save to localStorage
     }
 }
 
@@ -2583,7 +2611,14 @@ if (!uploadForm) {
             } else {
                 console.log('No MPS file provided - will only display gripper model for testing');
             }
-            
+
+            // Append haptic file if provided
+            const hapticFileInput = document.getElementById('haptic_file');
+            if (hapticFileInput && hapticFileInput.files && hapticFileInput.files.length > 0) {
+                formData.append('haptic_file', hapticFileInput.files[0]);
+                console.log('Haptic file:', hapticFileInput.files[0].name);
+            }
+
             // Append URDF file if provided
             if (urdfFileInput && urdfFileInput.files.length > 0) {
                 formData.append('urdf_file', urdfFileInput.files[0]);
@@ -2616,10 +2651,17 @@ if (!uploadForm) {
 
             // Store hand landmarks data (optional - for testing display without hand data)
             handLandmarksData = data.hand_landmarks || null;
+            hapticData = data.haptic_data || null;
             urdfData = data.urdf || null;
-            
+
             console.log('Hand landmarks data:', handLandmarksData);
             console.log('Right hand frames:', handLandmarksData?.right_hand?.length || 0);
+            console.log('Haptic data:', hapticData);
+            if (hapticData) {
+                console.log('Haptic sensors:', Object.keys(hapticData.sensors || {}));
+                console.log('Haptic timestamps:', hapticData.timestamps?.length || 0);
+                hapticTimestamps = hapticData.timestamps || [];
+            }
             
             // Hand data is optional - if not provided, we'll just show gripper model
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
@@ -3433,10 +3475,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Initialize DOM elements
     mpsFileInput = document.getElementById('mps_file');
+    hapticFileInput = document.getElementById('haptic_file');
     urdfFileInput = document.getElementById('urdf_file');
     stlFilesInput = document.getElementById('stl_files');
     stlFolderInput = document.getElementById('stl_folder');
     mpsFileInfo = document.getElementById('mps-file-info');
+    hapticFileInfo = document.getElementById('haptic-file-info');
     urdfFileInfo = document.getElementById('urdf-file-info');
     stlFileInfo = document.getElementById('stl-file-info');
     stlFileList = document.getElementById('stl-file-list');
@@ -3460,6 +3504,11 @@ document.addEventListener('DOMContentLoaded', function() {
     if (mpsFileInput) {
         mpsFileInput.addEventListener('change', handleMpsFileChange);
         console.log('MPS file input listener attached');
+    }
+
+    if (hapticFileInput) {
+        hapticFileInput.addEventListener('change', handleHapticFileChange);
+        console.log('Haptic file input listener attached');
     }
 
     if (urdfFileInput) {
@@ -3535,6 +3584,27 @@ document.addEventListener('DOMContentLoaded', function() {
                     mpsFileInfo.style.fontStyle = 'normal';
                 }
                 console.log(`✅ 自动选择 MPS 文件: ${mpsFile.name}`);
+            }
+
+            // Set Haptic CSV file (prefer files with 'haptic', 'force', or 'tactile' in name)
+            if (csvFiles.length > 0 && hapticFileInput) {
+                let hapticFile = csvFiles.find(f =>
+                    f.name.toLowerCase().includes('haptic') ||
+                    f.name.toLowerCase().includes('force') ||
+                    f.name.toLowerCase().includes('tactile'));
+
+                if (hapticFile) {
+                    const dt = new DataTransfer();
+                    dt.items.add(hapticFile);
+                    hapticFileInput.files = dt.files;
+
+                    if (hapticFileInfo) {
+                        hapticFileInfo.textContent = hapticFile.name;
+                        hapticFileInfo.style.color = '#28a745';
+                        hapticFileInfo.style.fontStyle = 'normal';
+                    }
+                    console.log(`✅ 自动选择 Haptic 文件: ${hapticFile.name}`);
+                }
             }
 
             // Set URDF file (prefer files with 'urdf' in name)
@@ -4083,9 +4153,21 @@ async function debugTestManoBasicMaterial() {
         console.error("MANO geometry contains NaN values!");
     }
 
-    // 使用 PhongMaterial 肤色（需要光源）
+    // 初始化顶点颜色（用于触觉可视化）
+    const numVerts = manoMesh.geometry.attributes.position.count;
+    const colors = new Float32Array(numVerts * 3);
+    // 初始为肤色 (0xffdbac -> r:1, g:0.858, b:0.674)
+    for (let i = 0; i < numVerts; i++) {
+        colors[i * 3] = 1.0;
+        colors[i * 3 + 1] = 0.858;
+        colors[i * 3 + 2] = 0.674;
+    }
+    manoMesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    // 使用 PhongMaterial 支持顶点颜色（用于触觉可视化）
     manoMesh.material = new THREE.MeshPhongMaterial({
-        color: 0xffdbac,  // 肤色
+        color: 0xffffff,  // 白色基础，让顶点颜色显示
+        vertexColors: true,  // 启用顶点颜色
         shininess: 30,
         side: THREE.DoubleSide
     });
@@ -4344,3 +4426,170 @@ async function reloadManoModel(objUrl, jsonUrl) {
 }
 window.fitManoShape = fitManoShape;
 window.reloadManoModel = reloadManoModel;
+
+// ========== 触觉数据可视化 ==========
+
+// MANO 指尖顶点索引 (来自 HOT3D)
+const MANO_FINGERTIP_VERT_INDICES = {
+    thumb: 744,
+    index: 320,
+    middle: 443,
+    ring: 554,
+    pinky: 671
+};
+
+// 每个指尖影响的顶点范围（近似值，需要根据实际权重调整）
+const FINGERTIP_INFLUENCE_RADIUS = 0.015;  // 15mm 影响半径
+
+/**
+ * 根据力值获取颜色 (绿色->黄色->红色)
+ */
+function getForceColor(normalizedForce) {
+    const p = Math.min(1, Math.max(0, normalizedForce));
+
+    // 绿色 -> 黄色 -> 红色
+    let r, g, b;
+    if (p < 0.5) {
+        // 绿色到黄色
+        r = p * 2;
+        g = 1;
+        b = 0;
+    } else {
+        // 黄色到红色
+        r = 1;
+        g = 1 - (p - 0.5) * 2;
+        b = 0;
+    }
+
+    return { r, g, b };
+}
+
+/**
+ * 根据当前时间获取触觉数据值
+ */
+function getHapticValueAtTime(currentTime) {
+    if (!hapticData || !hapticData.timestamps || hapticData.timestamps.length === 0) {
+        return null;
+    }
+
+    // 找到最近的时间戳索引
+    let nearestIdx = 0;
+    let minDiff = Math.abs(hapticData.timestamps[0] - currentTime);
+
+    for (let i = 1; i < hapticData.timestamps.length; i++) {
+        const diff = Math.abs(hapticData.timestamps[i] - currentTime);
+        if (diff < minDiff) {
+            minDiff = diff;
+            nearestIdx = i;
+        }
+    }
+
+    // 提取各传感器的力值
+    const result = {};
+    for (const [finger, sensorData] of Object.entries(hapticData.sensors)) {
+        if (sensorData.total && sensorData.total[nearestIdx] !== undefined) {
+            result[finger] = sensorData.total[nearestIdx];
+        }
+    }
+
+    return result;
+}
+
+/**
+ * 更新 MANO mesh 的顶点颜色以反映触觉数据
+ */
+function updateManoHapticColors(currentTime) {
+    if (!manoMesh || !hapticData) return;
+
+    const geometry = manoMesh.geometry;
+    if (!geometry.attributes.color) return;
+
+    const colors = geometry.attributes.color;
+    const positions = geometry.attributes.position;
+    const numVerts = positions.count;
+
+    // 获取当前时间的触觉值
+    const hapticValues = getHapticValueAtTime(currentTime);
+    if (!hapticValues) return;
+
+    // 计算力的范围用于归一化
+    const forceRange = hapticData.force_range || [0, 100];
+    const forceMin = forceRange[0];
+    const forceMax = Math.max(forceRange[1], forceMin + 1);
+
+    // 获取指尖顶点位置
+    const fingertipPositions = {};
+    for (const [finger, vertIdx] of Object.entries(MANO_FINGERTIP_VERT_INDICES)) {
+        if (vertIdx < numVerts) {
+            fingertipPositions[finger] = new THREE.Vector3(
+                positions.array[vertIdx * 3],
+                positions.array[vertIdx * 3 + 1],
+                positions.array[vertIdx * 3 + 2]
+            );
+        }
+    }
+
+    // 遍历所有顶点，计算颜色
+    for (let i = 0; i < numVerts; i++) {
+        const vertPos = new THREE.Vector3(
+            positions.array[i * 3],
+            positions.array[i * 3 + 1],
+            positions.array[i * 3 + 2]
+        );
+
+        // 默认肤色
+        let r = 1.0, g = 0.858, b = 0.674;
+
+        // 检查与各指尖的距离
+        for (const [finger, tipPos] of Object.entries(fingertipPositions)) {
+            const force = hapticValues[finger];
+            if (force === undefined) continue;
+
+            const dist = vertPos.distanceTo(tipPos);
+            if (dist < FINGERTIP_INFLUENCE_RADIUS) {
+                // 计算影响权重（距离越近权重越大）
+                const weight = 1 - (dist / FINGERTIP_INFLUENCE_RADIUS);
+
+                // 归一化力值
+                const normalizedForce = (force - forceMin) / (forceMax - forceMin);
+                const forceColor = getForceColor(normalizedForce);
+
+                // 混合颜色
+                r = r * (1 - weight) + forceColor.r * weight;
+                g = g * (1 - weight) + forceColor.g * weight;
+                b = b * (1 - weight) + forceColor.b * weight;
+            }
+        }
+
+        colors.array[i * 3] = r;
+        colors.array[i * 3 + 1] = g;
+        colors.array[i * 3 + 2] = b;
+    }
+
+    colors.needsUpdate = true;
+}
+
+/**
+ * 重置 MANO mesh 颜色为默认肤色
+ */
+function resetManoColors() {
+    if (!manoMesh) return;
+
+    const geometry = manoMesh.geometry;
+    if (!geometry.attributes.color) return;
+
+    const colors = geometry.attributes.color;
+    const numVerts = colors.count;
+
+    for (let i = 0; i < numVerts; i++) {
+        colors.array[i * 3] = 1.0;
+        colors.array[i * 3 + 1] = 0.858;
+        colors.array[i * 3 + 2] = 0.674;
+    }
+
+    colors.needsUpdate = true;
+}
+
+window.updateManoHapticColors = updateManoHapticColors;
+window.resetManoColors = resetManoColors;
+window.getHapticValueAtTime = getHapticValueAtTime;

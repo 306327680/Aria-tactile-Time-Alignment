@@ -283,12 +283,18 @@
                     </div>
 
                     <!-- File inputs in grid -->
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 12px;">
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 12px;">
                         <!-- MPS File -->
                         <div style="padding: 10px; background: #f8f9fa; border-radius: 6px;">
                             <label for="mps_file" style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">MPS CSV（手部数据）:</label>
                             <input type="file" id="mps_file" name="mps_file" accept=".csv" style="font-size: 0.8rem; width: 100%;">
                             <span class="file-info" id="mps-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px;">未选择</span>
+                        </div>
+                        <!-- Haptic File -->
+                        <div style="padding: 10px; background: #fff3e0; border-radius: 6px;">
+                            <label for="haptic_file" style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">触觉 CSV（力传感器）:</label>
+                            <input type="file" id="haptic_file" name="haptic_file" accept=".csv" style="font-size: 0.8rem; width: 100%;">
+                            <span class="file-info" id="haptic-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px;">未选择</span>
                         </div>
                         <!-- URDF File -->
                         <div style="padding: 10px; background: #f8f9fa; border-radius: 6px;">
