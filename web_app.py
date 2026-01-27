@@ -32,7 +32,7 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__,
             static_folder=os.path.join(base_dir, 'app', 'static'),
             template_folder=os.path.join(base_dir, 'templates'))
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 
 ALLOWED_EXTENSIONS = {'vrs', 'csv', 'stl', 'step', 'stp', 'urdf', 'xml'}
@@ -1114,6 +1114,227 @@ def uploaded_stl(filename):
             return jsonify({'error': 'STL file not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ==================== VRS Video Frame Service ====================
+# Try to import projectaria_tools for video frame extraction
+VRS_PROVIDER_AVAILABLE = False
+vrs_data_provider_module = None
+try:
+    from projectaria_tools.core import data_provider
+    from projectaria_tools.core.sensor_data import TimeDomain
+    vrs_data_provider_module = data_provider
+    VRS_PROVIDER_AVAILABLE = True
+    print("projectaria_tools loaded successfully for VRS video frames")
+except ImportError as e:
+    print(f"projectaria_tools not available for VRS video frames: {e}")
+
+# Global VRS provider cache
+_vrs_provider = None
+_vrs_path = None
+_vrs_cameras = []
+
+
+@app.route('/gripper/init_vrs', methods=['POST'])
+def init_vrs():
+    """Initialize VRS session for video frame extraction"""
+    global _vrs_provider, _vrs_path, _vrs_cameras
+
+    print("[init_vrs] VRS_PROVIDER_AVAILABLE:", VRS_PROVIDER_AVAILABLE)
+
+    if not VRS_PROVIDER_AVAILABLE:
+        return jsonify({'error': 'projectaria_tools not available', 'available': False}), 400
+
+    try:
+        vrs_file = request.files.get('vrs_file')
+
+        if not vrs_file or vrs_file.filename == '':
+            return jsonify({'error': 'No VRS file provided'}), 400
+
+        print(f"[init_vrs] Received VRS file: {vrs_file.filename}")
+
+        # Save VRS file
+        vrs_filename = secure_filename(vrs_file.filename)
+        vrs_path = os.path.join(app.config['UPLOAD_FOLDER'], vrs_filename)
+        vrs_file.save(vrs_path)
+        print(f"[init_vrs] VRS file saved to: {vrs_path}")
+
+        # Initialize VRS data provider directly
+        print(f"[init_vrs] Creating VRS data provider...")
+        _vrs_provider = vrs_data_provider_module.create_vrs_data_provider(vrs_path)
+        _vrs_path = vrs_path
+        print(f"[init_vrs] VRS provider created: {_vrs_provider}")
+
+        # Get available cameras/streams
+        _vrs_cameras = []
+        try:
+            all_streams = _vrs_provider.get_all_streams()
+            for stream_id in all_streams:
+                try:
+                    label = _vrs_provider.get_label_from_stream_id(stream_id)
+                    _vrs_cameras.append(label)
+                except:
+                    pass
+            print(f"[init_vrs] Available cameras: {_vrs_cameras}")
+        except Exception as e:
+            print(f"[init_vrs] Error getting streams: {e}")
+
+        return jsonify({
+            'success': True,
+            'vrs_path': vrs_path,
+            'cameras': _vrs_cameras,
+            'has_vrs': _vrs_provider is not None
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"[init_vrs] Error: {e}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/gripper/video_frame', methods=['GET'])
+def get_video_frame():
+    """Get video frame at specified timestamp"""
+    global _vrs_provider, _vrs_cameras
+
+    if not VRS_PROVIDER_AVAILABLE:
+        return jsonify({'error': 'projectaria_tools not available'}), 400
+
+    if _vrs_provider is None:
+        return jsonify({'error': 'VRS session not initialized. Call /gripper/init_vrs first'}), 400
+
+    try:
+        import io
+        import base64
+        from PIL import Image
+
+        timestamp_s = request.args.get('timestamp', type=float)
+        camera = request.args.get('camera', 'camera-rgb')
+
+        # Convert to nanoseconds (hand timestamps are in seconds)
+        # If timestamp is 0 or not provided, get first frame by index
+        use_first_frame = timestamp_s is None or timestamp_s <= 0
+        timestamp_ns = None if use_first_frame else int(timestamp_s * 1e9)
+
+        print(f"[video_frame] Requesting frame at {timestamp_s}s ({timestamp_ns}ns) from camera {camera}")
+
+        # Find the stream ID for the requested camera
+        stream_id = None
+        actual_camera = camera
+
+        # Try to find matching stream
+        all_streams = _vrs_provider.get_all_streams()
+        for sid in all_streams:
+            try:
+                label = _vrs_provider.get_label_from_stream_id(sid)
+                if camera == label or camera in label or label in camera:
+                    stream_id = sid
+                    actual_camera = label
+                    break
+            except:
+                continue
+
+        # If not found, try RGB camera specifically
+        if stream_id is None:
+            for sid in all_streams:
+                try:
+                    label = _vrs_provider.get_label_from_stream_id(sid)
+                    if 'rgb' in label.lower():
+                        stream_id = sid
+                        actual_camera = label
+                        print(f"[video_frame] Using RGB camera: {label}")
+                        break
+                except:
+                    continue
+
+        # If still not found, use first image stream
+        if stream_id is None and len(all_streams) > 0:
+            stream_id = all_streams[0]
+            try:
+                actual_camera = _vrs_provider.get_label_from_stream_id(stream_id)
+            except:
+                actual_camera = str(stream_id)
+            print(f"[video_frame] Using first available stream: {actual_camera}")
+
+        if stream_id is None:
+            return jsonify({'error': 'No image stream found in VRS'}), 404
+
+        # Get image data
+        if use_first_frame:
+            # Get first frame by index
+            result = _vrs_provider.get_image_data_by_index(stream_id, 0)
+        else:
+            # Get frame by timestamp
+            result = _vrs_provider.get_image_data_by_time_ns(
+                stream_id, timestamp_ns, TimeDomain.DEVICE_TIME
+            )
+
+        if result is None:
+            return jsonify({'error': f'No frame found for timestamp {timestamp_s}s'}), 404
+
+        # Unpack result: (ImageData, ImageDataRecord)
+        if isinstance(result, tuple) and len(result) >= 2:
+            image_data, image_record = result[0], result[1]
+        else:
+            return jsonify({'error': f'Unexpected image data format'}), 500
+
+        # Get timestamp from record
+        frame_timestamp_ns = image_record.capture_timestamp_ns
+
+        # Convert to numpy array
+        image_array = image_data.to_numpy_array()
+
+        # Handle grayscale or RGB
+        if len(image_array.shape) == 2:
+            img = Image.fromarray(image_array, mode='L')
+        elif len(image_array.shape) == 3 and image_array.shape[2] == 1:
+            img = Image.fromarray(image_array[:, :, 0], mode='L')
+        else:
+            img = Image.fromarray(image_array)
+
+        # Rotate image 90 degrees clockwise (270 degrees counter-clockwise)
+        img = img.rotate(-90, expand=True)
+
+        # Encode to base64
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=85)
+        buffer.seek(0)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        return jsonify({
+            'image': f'data:image/jpeg;base64,{img_base64}',
+            'timestamp_ns': int(frame_timestamp_ns),
+            'timestamp_s': frame_timestamp_ns / 1e9,
+            'width': image_array.shape[1],
+            'height': image_array.shape[0],
+            'camera': actual_camera
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"[video_frame] Error: {e}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@app.route('/gripper/vrs_status')
+def vrs_status():
+    """Check VRS session status"""
+    global _vrs_provider, _vrs_path, _vrs_cameras
+
+    return jsonify({
+        'vrs_provider_available': VRS_PROVIDER_AVAILABLE,
+        'session_initialized': _vrs_provider is not None,
+        'vrs_path': _vrs_path,
+        'cameras': _vrs_cameras
+    })
 
 
 # ==================== IK Service ====================

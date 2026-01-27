@@ -147,6 +147,13 @@ let isPlaying = false;
 let playbackSpeed = 1;
 let playInterval = null;
 
+// VRS video frame settings
+let vrsSessionInitialized = false;
+let vrsAvailableCameras = [];
+let lastVideoFrameTimestamp = null;
+let videoFrameUpdateInterval = 200;  // ms between frame updates
+let videoFramePending = false;
+
 // Hand mesh visualization
 let handMeshModel = null;  // GLB hand model
 let handMeshBones = {};  // Bone references for IK
@@ -3173,6 +3180,9 @@ if (!uploadForm) {
 
             // Update file status box
             updateFileStatusBox(data);
+
+            // Show video frame panel (user can load VRS later)
+            showVideoFramePanel();
             
             // Hand data is optional - if not provided, we'll just show gripper model
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
@@ -4077,6 +4087,10 @@ if (timelineSlider) {
         // Force render
         renderGripperScene();
         if (gripperRenderer) gripperRenderer.render(gripperScene, gripperCamera);
+        // Update video frame
+        if (vrsSessionInitialized) {
+            updateVideoFrame();
+        }
     });
 }
 
@@ -5790,3 +5804,198 @@ function resetManoColors() {
 window.updateManoHapticColors = updateManoHapticColors;
 window.resetManoColors = resetManoColors;
 window.getHapticValueAtTime = getHapticValueAtTime;
+
+// ==================== VRS Video Frame Functions ====================
+
+/**
+ * Initialize VRS file input listener
+ */
+function initVRSFileInput() {
+    const vrsFileInput = document.getElementById('vrs_file');
+    const vrsFileInfo = document.getElementById('vrs-file-info');
+    const videoFramePanel = document.getElementById('video-frame-panel');
+
+    if (vrsFileInput) {
+        vrsFileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            if (vrsFileInfo) {
+                vrsFileInfo.textContent = file.name;
+            }
+
+            // Show panel
+            if (videoFramePanel) {
+                videoFramePanel.style.display = 'flex';
+            }
+
+            // Upload and initialize VRS session
+            await initVRSSession(file);
+        });
+    }
+}
+
+/**
+ * Upload VRS file and initialize session
+ */
+async function initVRSSession(vrsFile) {
+    const loadingEl = document.getElementById('video-frame-loading');
+    const errorEl = document.getElementById('video-frame-error');
+    const imgEl = document.getElementById('video-frame-img');
+    const vrsFileInfo = document.getElementById('vrs-file-info');
+
+    try {
+        if (errorEl) errorEl.style.display = 'none';
+        if (imgEl) imgEl.style.display = 'none';
+
+        console.log('Uploading VRS file:', vrsFile.name, 'size:', (vrsFile.size / 1024 / 1024).toFixed(1), 'MB');
+
+        const formData = new FormData();
+        formData.append('vrs_file', vrsFile);
+
+        const response = await fetch('/gripper/init_vrs', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+        console.log('VRS init response:', result);
+
+        if (response.ok && result.success) {
+            vrsSessionInitialized = true;
+            vrsAvailableCameras = result.cameras || [];
+            console.log('VRS session initialized, cameras:', vrsAvailableCameras);
+
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            if (vrsFileInfo) vrsFileInfo.textContent = `✓ ${vrsFile.name}`;
+
+            // Fetch first frame immediately (timestamp 0 will get first frame)
+            lastVideoFrameTimestamp = null;  // Reset to force fetch
+            console.log('Fetching initial video frame...');
+            await updateVideoFrame(0);  // Force timestamp 0 to get first frame
+        } else {
+            throw new Error(result.error || 'Failed to initialize VRS session');
+        }
+
+    } catch (error) {
+        console.error('VRS initialization error:', error);
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (errorEl) {
+            errorEl.textContent = error.message || '初始化失败';
+            errorEl.style.display = 'block';
+        }
+        if (vrsFileInfo) vrsFileInfo.textContent = `✗ ${vrsFile.name}`;
+        vrsSessionInitialized = false;
+    }
+}
+
+/**
+ * Fetch and display video frame for current timestamp
+ * @param {number} [forceTimestamp] - Optional timestamp to fetch, bypasses normal timestamp check
+ */
+async function updateVideoFrame(forceTimestamp = null) {
+    if (!vrsSessionInitialized || videoFramePending) return;
+
+    // Get current timestamp
+    let currentTime;
+    if (forceTimestamp !== null) {
+        currentTime = forceTimestamp;
+    } else {
+        const timestamps = handTimestamps.length > 0 ? handTimestamps : hapticTimestamps;
+        if (timestamps.length === 0) {
+            // No hand/haptic data loaded - use a default timestamp (start of video)
+            currentTime = 0;
+        } else {
+            const frameIndex = Math.floor(currentFrameIndex) % timestamps.length;
+            currentTime = timestamps[frameIndex];
+        }
+    }
+
+    // Skip if timestamp hasn't changed enough
+    if (lastVideoFrameTimestamp !== null &&
+        Math.abs(currentTime - lastVideoFrameTimestamp) < 0.05) {
+        return;
+    }
+
+    videoFramePending = true;
+    const loadingEl = document.getElementById('video-frame-loading');
+    const errorEl = document.getElementById('video-frame-error');
+    const imgEl = document.getElementById('video-frame-img');
+    const timeEl = document.getElementById('video-frame-time');
+
+    try {
+        if (loadingEl) loadingEl.style.display = 'block';
+
+        const camera = vrsAvailableCameras.find(c => c.includes('rgb')) ||
+                       vrsAvailableCameras[0] || 'camera-rgb';
+
+        console.log(`[updateVideoFrame] Fetching frame at timestamp=${currentTime}s, camera=${camera}`);
+        const response = await fetch(`/gripper/video_frame?timestamp=${currentTime}&camera=${camera}`);
+        const result = await response.json();
+        console.log(`[updateVideoFrame] Response:`, response.ok, result.image ? 'has image' : result.error);
+
+        if (response.ok && result.image) {
+            if (imgEl) {
+                imgEl.src = result.image;
+                imgEl.style.display = 'block';
+            }
+            if (errorEl) errorEl.style.display = 'none';
+            if (timeEl) timeEl.textContent = `${result.timestamp_s.toFixed(2)}s`;
+            lastVideoFrameTimestamp = currentTime;
+        } else {
+            throw new Error(result.error || 'Failed to get frame');
+        }
+
+    } catch (error) {
+        console.error('Video frame error:', error);
+        if (errorEl) {
+            errorEl.textContent = error.message || '获取帧失败';
+            errorEl.style.display = 'block';
+        }
+        if (imgEl) imgEl.style.display = 'none';
+    } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+        videoFramePending = false;
+    }
+}
+
+/**
+ * Schedule video frame updates during playback
+ */
+let videoFrameUpdateTimer = null;
+
+function startVideoFrameUpdates() {
+    if (videoFrameUpdateTimer) return;
+
+    videoFrameUpdateTimer = setInterval(() => {
+        if (vrsSessionInitialized && isPlaying) {
+            updateVideoFrame();
+        }
+    }, videoFrameUpdateInterval);
+}
+
+function stopVideoFrameUpdates() {
+    if (videoFrameUpdateTimer) {
+        clearInterval(videoFrameUpdateTimer);
+        videoFrameUpdateTimer = null;
+    }
+}
+
+// Show video frame panel when data is loaded
+function showVideoFramePanel() {
+    const panel = document.getElementById('video-frame-panel');
+    if (panel) {
+        panel.style.display = 'flex';
+    }
+}
+
+// Initialize VRS input on page load
+document.addEventListener('DOMContentLoaded', () => {
+    initVRSFileInput();
+    startVideoFrameUpdates();
+});
+
+// Export for use elsewhere
+window.updateVideoFrame = updateVideoFrame;
+window.showVideoFramePanel = showVideoFramePanel;

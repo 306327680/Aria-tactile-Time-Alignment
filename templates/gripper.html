@@ -188,7 +188,7 @@
 
         #gripper-canvas {
             width: 100%;
-            height: 600px;
+            height: 450px;
             border-radius: 6px;
             background: #1a1a1a;
         }
@@ -353,6 +353,25 @@
             font-size: 0.55rem;
             color: #6c757d;
             margin-top: 2px;
+        }
+
+        /* Video Frame Panel Styles */
+        .video-frame-panel {
+            width: 320px;
+            min-width: 280px;
+            max-width: 400px;
+            background: linear-gradient(180deg, #fff 0%, #f8f9fa 100%);
+            border-radius: 8px;
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+            align-self: center;
+        }
+
+        .video-frame-panel img {
+            max-height: 400px;
+            object-fit: contain;
         }
 
     </style>
@@ -545,6 +564,30 @@
                             <span style="font-size: 0.7rem; color: #666;">最大</span>
                             <input type="number" id="force-bar-max" value="174" min="1" step="10" style="width: 50px; padding: 2px 4px; font-size: 0.7rem; border: 1px solid #dee2e6; border-radius: 3px; text-align: center;">
                             <span style="font-size: 0.7rem; color: #666;">N</span>
+                        </div>
+                    </div>
+
+                    <!-- Video Frame Panel -->
+                    <div id="video-frame-panel" class="video-frame-panel" style="display: none;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <h4 style="margin: 0; color: #495057; font-size: 0.85rem;">RGB 相机</h4>
+                            <span id="video-frame-time" style="font-size: 0.7rem; color: #666;">--</span>
+                        </div>
+                        <div id="video-frame-container" style="position: relative; background: #000; border-radius: 4px; overflow: hidden;">
+                            <img id="video-frame-img" src="" alt="Video frame" style="width: 100%; height: auto; display: block;">
+                            <div id="video-frame-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 0.8rem; display: none;">
+                                加载中...
+                            </div>
+                            <div id="video-frame-error" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff6b6b; font-size: 0.75rem; text-align: center; display: none; padding: 10px;">
+                                未加载 VRS
+                            </div>
+                        </div>
+                        <div style="margin-top: 6px; display: flex; gap: 6px; align-items: center;">
+                            <label for="vrs_file" style="padding: 4px 8px; background: #667eea; color: white; border-radius: 4px; cursor: pointer; font-size: 0.7rem; white-space: nowrap;">
+                                选择 VRS
+                                <input type="file" id="vrs_file" accept=".vrs" style="display: none;">
+                            </label>
+                            <span id="vrs-file-info" style="font-size: 0.65rem; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">未选择</span>
                         </div>
                     </div>
                 </div>

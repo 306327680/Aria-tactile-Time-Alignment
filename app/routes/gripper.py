@@ -5,6 +5,9 @@ Gripper visualization routes
 import os
 import subprocess
 import sys
+import io
+import base64
+import tempfile
 from flask import Blueprint, render_template, request, jsonify, send_file, current_app
 from werkzeug.utils import secure_filename
 
@@ -15,8 +18,23 @@ from app.utils.haptic_loader import load_haptic_data
 from app.utils.file_utils import allowed_file
 from app.utils.mps_folder_loader import load_slam_trajectory, load_hand_tracking_device, transform_to_world
 
+# Try to import aria_api for video frame extraction
+try:
+    import sys
+    aria_data_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    if aria_data_path not in sys.path:
+        sys.path.insert(0, aria_data_path)
+    from aria_api import AriaSession
+    ARIA_SESSION_AVAILABLE = True
+except ImportError:
+    ARIA_SESSION_AVAILABLE = False
+    AriaSession = None
 
 bp = Blueprint('gripper', __name__, url_prefix='/gripper')
+
+# Global aria session cache
+_aria_session = None
+_aria_vrs_path = None
 
 
 # Path to the MANO shape fitting script
@@ -401,4 +419,146 @@ def list_mano_models():
                 })
 
     return jsonify({'models': models})
+
+
+@bp.route('/init_vrs', methods=['POST'])
+def init_vrs():
+    """Initialize VRS session for video frame extraction"""
+    global _aria_session, _aria_vrs_path
+
+    print("[init_vrs] ARIA_SESSION_AVAILABLE:", ARIA_SESSION_AVAILABLE)
+
+    if not ARIA_SESSION_AVAILABLE:
+        return jsonify({'error': 'aria_api not available', 'available': False}), 400
+
+    try:
+        vrs_file = request.files.get('vrs_file')
+        mps_folder_path = request.form.get('mps_folder_path')
+
+        if not vrs_file or vrs_file.filename == '':
+            return jsonify({'error': 'No VRS file provided'}), 400
+
+        print(f"[init_vrs] Received VRS file: {vrs_file.filename}")
+
+        # Save VRS file
+        vrs_filename = secure_filename(vrs_file.filename)
+        vrs_path = os.path.join(current_app.config['UPLOAD_FOLDER'], vrs_filename)
+        vrs_file.save(vrs_path)
+        print(f"[init_vrs] VRS file saved to: {vrs_path}")
+
+        # Initialize AriaSession
+        print(f"[init_vrs] Creating AriaSession...")
+        _aria_session = AriaSession.create(vrs_path=vrs_path, mps_dir=mps_folder_path)
+        _aria_vrs_path = vrs_path
+        print(f"[init_vrs] AriaSession created: {_aria_session}")
+
+        # Get available cameras
+        cameras = []
+        if _aria_session and _aria_session.capabilities.available_cameras:
+            cameras = _aria_session.capabilities.available_cameras
+        print(f"[init_vrs] Available cameras: {cameras}")
+
+        return jsonify({
+            'success': True,
+            'vrs_path': vrs_path,
+            'cameras': cameras,
+            'has_vrs': _aria_session.capabilities.has_vrs if _aria_session else False
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"[init_vrs] Error: {e}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@bp.route('/video_frame', methods=['GET'])
+def get_video_frame():
+    """Get video frame at specified timestamp"""
+    global _aria_session
+
+    if not ARIA_SESSION_AVAILABLE:
+        return jsonify({'error': 'aria_api not available'}), 400
+
+    if _aria_session is None:
+        return jsonify({'error': 'VRS session not initialized. Call /gripper/init_vrs first'}), 400
+
+    try:
+        timestamp_s = request.args.get('timestamp', type=float)
+        camera = request.args.get('camera', 'camera-rgb')
+
+        # Convert to nanoseconds (hand timestamps are in seconds)
+        # If timestamp is 0 or not provided, pass None to get first frame
+        timestamp_ns = None
+        if timestamp_s is not None and timestamp_s > 0:
+            timestamp_ns = int(timestamp_s * 1e9)
+
+        print(f"[video_frame] Requesting frame at {timestamp_s}s ({timestamp_ns}ns) from camera {camera}")
+
+        # Try to get image, first with specified camera, then with alternatives
+        result = _aria_session.get_image(camera, timestamp_ns=timestamp_ns)
+
+        # If camera not found, try alternatives
+        if result is None and _aria_session.capabilities.available_cameras:
+            for alt_camera in _aria_session.capabilities.available_cameras:
+                print(f"[video_frame] Trying alternative camera: {alt_camera}")
+                result = _aria_session.get_image(alt_camera, timestamp_ns=timestamp_ns)
+                if result is not None:
+                    camera = alt_camera
+                    break
+
+        if result is None:
+            return jsonify({'error': f'No frame found for timestamp {timestamp_s}s'}), 404
+
+        frame_timestamp_ns, image_array, intrinsics = result
+
+        # Convert to JPEG
+        from PIL import Image
+        import numpy as np
+
+        # Handle grayscale or RGB
+        if len(image_array.shape) == 2:
+            img = Image.fromarray(image_array, mode='L')
+        elif image_array.shape[2] == 1:
+            img = Image.fromarray(image_array[:, :, 0], mode='L')
+        else:
+            img = Image.fromarray(image_array)
+
+        # Encode to base64
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=85)
+        buffer.seek(0)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+        return jsonify({
+            'image': f'data:image/jpeg;base64,{img_base64}',
+            'timestamp_ns': frame_timestamp_ns,
+            'timestamp_s': frame_timestamp_ns / 1e9,
+            'width': image_array.shape[1],
+            'height': image_array.shape[0],
+            'camera': camera
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
+
+
+@bp.route('/vrs_status')
+def vrs_status():
+    """Check VRS session status"""
+    global _aria_session, _aria_vrs_path
+
+    return jsonify({
+        'aria_session_available': ARIA_SESSION_AVAILABLE,
+        'session_initialized': _aria_session is not None,
+        'vrs_path': _aria_vrs_path,
+        'cameras': _aria_session.capabilities.available_cameras if _aria_session else []
+    })
 
