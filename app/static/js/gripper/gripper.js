@@ -19,7 +19,19 @@ const HAND_CONNECTIONS = [
     [8, 20], [11, 20], [14, 20], [17, 20]
 ];
 
-// Finger colors
+// Finger base colors (HSL format for easy darkening)
+// Each finger has a base hue, saturation, and lightness
+const FINGER_BASE_COLORS = {
+    thumb:  { h: 0,   s: 100, l: 50 },   // Red
+    index:  { h: 30,  s: 100, l: 50 },   // Orange
+    middle: { h: 60,  s: 100, l: 50 },   // Yellow
+    ring:   { h: 120, s: 100, l: 40 },   // Green
+    pinky:  { h: 240, s: 100, l: 50 },   // Blue
+    wrist:  { h: 0,   s: 0,   l: 50 },   // Gray
+    palm:   { h: 280, s: 100, l: 40 }    // Purple
+};
+
+// Legacy FINGER_COLORS for backward compatibility
 const FINGER_COLORS = {
     thumb: 0xff0000,    // Red
     index: 0xffa500,    // Orange
@@ -29,6 +41,83 @@ const FINGER_COLORS = {
     wrist: 0x6c757d,    // Gray
     palm: 0x800080      // Purple
 };
+
+/**
+ * Convert HSL to hex color
+ */
+function hslToHex(h, s, l) {
+    s /= 100;
+    l /= 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return Math.round(255 * color).toString(16).padStart(2, '0');
+    };
+    return parseInt(`${f(0)}${f(8)}${f(4)}`, 16);
+}
+
+/**
+ * Get color for a landmark based on finger and joint depth
+ * depth: 0 = closest to wrist (lightest), higher = further from wrist (darker)
+ */
+function getLandmarkColor(fingerName, depth, maxDepth) {
+    const base = FINGER_BASE_COLORS[fingerName] || FINGER_BASE_COLORS.wrist;
+    // Darken based on depth: depth 0 = light, max depth = dark
+    const darkenFactor = depth / maxDepth;
+    const newL = Math.max(20, base.l - darkenFactor * 35); // Lightness decreases with depth
+    return hslToHex(base.h, base.s, newL);
+}
+
+/**
+ * MPS landmark index to finger mapping with depth
+ * Returns { finger: string, depth: number, maxDepth: number }
+ */
+function getLandmarkFingerInfo(idx) {
+    // MPS format:
+    // 0: thumb_tip, 1: index_tip, 2: middle_tip, 3: ring_tip, 4: pinky_tip
+    // 5: wrist
+    // 6-7: thumb joints (6=MCP, 7=IP)
+    // 8-10: index joints (8=MCP, 9=PIP, 10=DIP)
+    // 11-13: middle joints
+    // 14-16: ring joints
+    // 17-19: pinky joints
+    // 20: palm_center
+
+    if (idx === 5) return { finger: 'wrist', depth: 0, maxDepth: 1 };
+    if (idx === 20) return { finger: 'palm', depth: 0, maxDepth: 1 };
+
+    // Thumb: tip=0, joints=6,7, so order from wrist: 6->7->0
+    if (idx === 0) return { finger: 'thumb', depth: 3, maxDepth: 3 };  // tip (darkest)
+    if (idx === 6) return { finger: 'thumb', depth: 1, maxDepth: 3 };  // MCP
+    if (idx === 7) return { finger: 'thumb', depth: 2, maxDepth: 3 };  // IP
+
+    // Index: tip=1, joints=8,9,10, order: 8->9->10->1
+    if (idx === 1) return { finger: 'index', depth: 4, maxDepth: 4 };  // tip
+    if (idx === 8) return { finger: 'index', depth: 1, maxDepth: 4 };  // MCP
+    if (idx === 9) return { finger: 'index', depth: 2, maxDepth: 4 };  // PIP
+    if (idx === 10) return { finger: 'index', depth: 3, maxDepth: 4 }; // DIP
+
+    // Middle: tip=2, joints=11,12,13
+    if (idx === 2) return { finger: 'middle', depth: 4, maxDepth: 4 };
+    if (idx === 11) return { finger: 'middle', depth: 1, maxDepth: 4 };
+    if (idx === 12) return { finger: 'middle', depth: 2, maxDepth: 4 };
+    if (idx === 13) return { finger: 'middle', depth: 3, maxDepth: 4 };
+
+    // Ring: tip=3, joints=14,15,16
+    if (idx === 3) return { finger: 'ring', depth: 4, maxDepth: 4 };
+    if (idx === 14) return { finger: 'ring', depth: 1, maxDepth: 4 };
+    if (idx === 15) return { finger: 'ring', depth: 2, maxDepth: 4 };
+    if (idx === 16) return { finger: 'ring', depth: 3, maxDepth: 4 };
+
+    // Pinky: tip=4, joints=17,18,19
+    if (idx === 4) return { finger: 'pinky', depth: 4, maxDepth: 4 };
+    if (idx === 17) return { finger: 'pinky', depth: 1, maxDepth: 4 };
+    if (idx === 18) return { finger: 'pinky', depth: 2, maxDepth: 4 };
+    if (idx === 19) return { finger: 'pinky', depth: 3, maxDepth: 4 };
+
+    return { finger: 'wrist', depth: 0, maxDepth: 1 };
+}
 
 // Global variables
 let gripperScene, gripperCamera, gripperRenderer, gripperControls;
@@ -868,22 +957,15 @@ function renderHandLandmarks(scene, landmarks, isMapped = false) {
         handLandmarkGeometry = new THREE.SphereGeometry(0.005, 8, 8);
     }
 
-    // Create joint spheres
+    // Create joint spheres with finger-based coloring (darker = further from wrist)
     landmarks.forEach((point, idx) => {
         if (!point || point.length < 3) {
             return;
         }
 
-        let color = 0xffffff;
-
-        // Color fingertips
-        if (idx === 0) color = FINGER_COLORS.thumb;
-        else if (idx === 1) color = FINGER_COLORS.index;
-        else if (idx === 2) color = FINGER_COLORS.middle;
-        else if (idx === 3) color = FINGER_COLORS.ring;
-        else if (idx === 4) color = FINGER_COLORS.pinky;
-        else if (idx === 5) color = FINGER_COLORS.wrist;
-        else if (idx === 20) color = FINGER_COLORS.palm;
+        // Get finger info and calculate color based on depth
+        const fingerInfo = getLandmarkFingerInfo(idx);
+        const color = getLandmarkColor(fingerInfo.finger, fingerInfo.depth, fingerInfo.maxDepth);
 
         // Reuse materials to avoid memory leaks
         if (!handLandmarkMaterials[color]) {
@@ -909,13 +991,21 @@ function renderHandLandmarks(scene, landmarks, isMapped = false) {
                 new THREE.Vector3(end[0], end[1], end[2])
             ]);
 
-            let color = 0xffffff;
-            if (i === 0 || j === 0) color = FINGER_COLORS.thumb;
-            else if (i === 1 || j === 1) color = FINGER_COLORS.index;
-            else if (i === 2 || j === 2) color = FINGER_COLORS.middle;
-            else if (i === 3 || j === 3) color = FINGER_COLORS.ring;
-            else if (i === 4 || j === 4) color = FINGER_COLORS.pinky;
-            else if (i === 20 || j === 20) color = FINGER_COLORS.palm;
+            // Use the color of the endpoint further from wrist (higher depth = darker)
+            const infoI = getLandmarkFingerInfo(i);
+            const infoJ = getLandmarkFingerInfo(j);
+            // Use the finger of the point with higher depth, or the one that's not wrist/palm
+            let fingerInfo;
+            if (infoI.finger === 'wrist' || infoI.finger === 'palm') {
+                fingerInfo = infoJ;
+            } else if (infoJ.finger === 'wrist' || infoJ.finger === 'palm') {
+                fingerInfo = infoI;
+            } else {
+                fingerInfo = infoI.depth > infoJ.depth ? infoI : infoJ;
+            }
+            // Use average depth for the line color
+            const avgDepth = (infoI.depth + infoJ.depth) / 2;
+            const color = getLandmarkColor(fingerInfo.finger, avgDepth, fingerInfo.maxDepth);
 
             // Reuse line materials
             const matKey = 'line_' + color;
@@ -2231,6 +2321,11 @@ function renderGripperScene() {
             const hapticFrameIndex = Math.floor(currentFrameIndex) % hapticTimestamps.length;
             const currentTime = hapticTimestamps[hapticFrameIndex] || 0;
             updateManoHapticColors(currentTime);
+            // Also update force bars independently (in case MANO mesh is not available)
+            const hapticValues = getHapticValueAtTime(currentTime);
+            if (hapticValues) {
+                updateForceBars(hapticValues);
+            }
         }
 
         // Scene will render with grid, axes, and gripper models (if any)
@@ -2360,6 +2455,11 @@ function renderGripperScene() {
         if (timestamps.length > 0) {
             const currentTime = timestamps[Math.min(frameIndex, timestamps.length - 1)] || 0;
             updateManoHapticColors(currentTime);
+            // Also update force bars independently
+            const hapticValues = getHapticValueAtTime(currentTime);
+            if (hapticValues) {
+                updateForceBars(hapticValues);
+            }
         }
     } else if (frameIndex % 100 === 0) {
         console.log('renderGripperScene: hapticData is null/undefined');
@@ -3031,7 +3131,48 @@ if (!uploadForm) {
                 console.log('Haptic sensors:', Object.keys(hapticData.sensors || {}));
                 console.log('Haptic timestamps:', hapticData.timestamps?.length || 0);
                 hapticTimestamps = hapticData.timestamps || [];
+
+                // Reset haptic time offset for auto-calculation
+                hapticTimeOffset = null;
+                hapticTimeDebugCounter = 0;
+
+                // Debug: log first few force values
+                if (hapticData.sensors) {
+                    for (const [finger, sensorData] of Object.entries(hapticData.sensors)) {
+                        console.log(`${finger} force samples (first 5):`, sensorData.total?.slice(0, 5));
+                        // Avoid stack overflow with large arrays
+                        if (sensorData.total && sensorData.total.length > 0) {
+                            let min = sensorData.total[0], max = sensorData.total[0];
+                            for (let i = 1; i < sensorData.total.length; i++) {
+                                if (sensorData.total[i] < min) min = sensorData.total[i];
+                                if (sensorData.total[i] > max) max = sensorData.total[i];
+                            }
+                            console.log(`${finger} force range:`, min, '-', max);
+                        }
+                    }
+                }
+
+                // Show force bars panel when haptic data is available
+                const forceBarsPanel = document.getElementById('force-bars-panel');
+                if (forceBarsPanel) {
+                    forceBarsPanel.style.display = 'flex';
+                    console.log('Force bars panel shown');
+                }
+
+                // Auto-adjust force max based on data range
+                if (hapticData.force_range && hapticData.force_range[1] > hapticSettings.forceMax) {
+                    hapticSettings.forceMax = Math.ceil(hapticData.force_range[1]);
+                    // Update both inputs
+                    const forceMaxInput = document.getElementById('haptic-force-max');
+                    const forceBarMaxInput = document.getElementById('force-bar-max');
+                    if (forceMaxInput) forceMaxInput.value = hapticSettings.forceMax;
+                    if (forceBarMaxInput) forceBarMaxInput.value = hapticSettings.forceMax;
+                    console.log('Auto-adjusted forceMax to:', hapticSettings.forceMax);
+                }
             }
+
+            // Update file status box
+            updateFileStatusBox(data);
             
             // Hand data is optional - if not provided, we'll just show gripper model
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
@@ -5178,7 +5319,88 @@ function initHapticControls() {
         });
     }
 
+    // Force bar max input (in force bars panel)
+    const forceBarMaxInput = document.getElementById('force-bar-max');
+    if (forceBarMaxInput) {
+        forceBarMaxInput.addEventListener('change', (e) => {
+            hapticSettings.forceMax = parseFloat(e.target.value) || 174;
+            // Sync with haptic panel input
+            if (forceMaxInput) forceMaxInput.value = hapticSettings.forceMax;
+            console.log('Force bar max updated to:', hapticSettings.forceMax);
+        });
+    }
+
     console.log('Haptic controls initialized');
+}
+
+/**
+ * Update the file status box with load results
+ */
+function updateFileStatusBox(data) {
+    const statusBox = document.getElementById('file-status-box');
+    if (!statusBox) return;
+
+    const lines = [];
+
+    // Hand data status
+    if (data.hand_landmarks && data.hand_landmarks.right_hand) {
+        const frames = data.hand_landmarks.right_hand.length;
+        const validFrames = data.hand_landmarks.right_hand.filter(f => f && f.length === 21).length;
+        lines.push(`<span style="color: #28a745;">✓ 手部数据:</span> ${frames} 帧 (有效: ${validFrames})`);
+    } else {
+        lines.push(`<span style="color: #dc3545;">✗ 手部数据:</span> 未加载`);
+    }
+
+    // Haptic data status
+    if (data.haptic_data && data.haptic_data.sensors) {
+        const sensors = Object.keys(data.haptic_data.sensors);
+        const samples = data.haptic_data.timestamps?.length || 0;
+        const forceRange = data.haptic_data.force_range || [0, 0];
+        lines.push(`<span style="color: #28a745;">✓ 触觉数据:</span> ${samples} 样本`);
+        lines.push(`  传感器: ${sensors.join(', ')}`);
+        lines.push(`  力范围: ${forceRange[0].toFixed(2)} ~ ${forceRange[1].toFixed(2)} N`);
+
+        // Show per-sensor info (avoid stack overflow with large arrays)
+        for (const [finger, sensorData] of Object.entries(data.haptic_data.sensors)) {
+            if (sensorData.total && sensorData.total.length > 0) {
+                let min = sensorData.total[0], max = sensorData.total[0];
+                for (let i = 1; i < sensorData.total.length; i++) {
+                    if (sensorData.total[i] < min) min = sensorData.total[i];
+                    if (sensorData.total[i] > max) max = sensorData.total[i];
+                }
+                lines.push(`  ${finger}: ${min.toFixed(2)} ~ ${max.toFixed(2)} N`);
+            }
+        }
+    } else {
+        lines.push(`<span style="color: #ffc107;">○ 触觉数据:</span> 未加载`);
+    }
+
+    // URDF status
+    if (data.urdf) {
+        const linkCount = data.urdf.links?.length || 0;
+        const jointCount = data.urdf.joints?.length || 0;
+        lines.push(`<span style="color: #28a745;">✓ URDF:</span> ${linkCount} links, ${jointCount} joints`);
+    } else {
+        lines.push(`<span style="color: #ffc107;">○ URDF:</span> 未加载`);
+    }
+
+    // STL status
+    if (data.stl_file_map && Object.keys(data.stl_file_map).length > 0) {
+        lines.push(`<span style="color: #28a745;">✓ STL:</span> ${Object.keys(data.stl_file_map).length} 文件`);
+    } else if (data.stl_urls && data.stl_urls.length > 0) {
+        lines.push(`<span style="color: #28a745;">✓ STL:</span> ${data.stl_urls.length} 文件`);
+    } else {
+        lines.push(`<span style="color: #ffc107;">○ STL:</span> 未加载`);
+    }
+
+    // World coordinates
+    if (data.world_coordinates) {
+        lines.push(`<span style="color: #17a2b8;">ℹ 坐标系:</span> 世界坐标`);
+    } else {
+        lines.push(`<span style="color: #6c757d;">ℹ 坐标系:</span> 设备坐标`);
+    }
+
+    statusBox.innerHTML = lines.join('<br>');
 }
 
 // 更新当前力值显示
@@ -5191,6 +5413,80 @@ function updateHapticForceDisplay(hapticValues) {
     if (hapticValues.index !== undefined) forces.push(`食:${hapticValues.index.toFixed(1)}`);
 
     forceDisplay.textContent = forces.length > 0 ? forces.join(' ') : '--';
+
+    // Update force progress bars
+    updateForceBars(hapticValues);
+}
+
+/**
+ * Update force progress bars UI
+ */
+function updateForceBars(hapticValues) {
+    const thumbBar = document.getElementById('thumb-force-bar');
+    const indexBar = document.getElementById('index-force-bar');
+    const thumbValue = document.getElementById('thumb-force-value');
+    const indexValue = document.getElementById('index-force-value');
+    const thumbMaxLabel = document.getElementById('thumb-force-max-label');
+    const indexMaxLabel = document.getElementById('index-force-max-label');
+
+    if (!thumbBar || !indexBar) return;
+
+    const forceMin = hapticSettings.forceMin;
+    const forceMax = hapticSettings.forceMax;
+    const forceRange = forceMax - forceMin;
+
+    // Update max labels
+    if (thumbMaxLabel) thumbMaxLabel.textContent = forceMax;
+    if (indexMaxLabel) indexMaxLabel.textContent = forceMax;
+
+    // Update thumb bar
+    if (hapticValues && hapticValues.thumb !== undefined) {
+        const thumbForce = hapticValues.thumb;
+        const thumbNorm = Math.min(1, Math.max(0, (thumbForce - forceMin) / forceRange));
+        const thumbPercent = thumbNorm * 100;
+        thumbBar.style.height = thumbPercent + '%';
+        thumbBar.style.background = getForceBarGradient(thumbNorm);
+        if (thumbValue) thumbValue.textContent = thumbForce.toFixed(1);
+    } else {
+        thumbBar.style.height = '0%';
+        if (thumbValue) thumbValue.textContent = '--';
+    }
+
+    // Update index bar
+    if (hapticValues && hapticValues.index !== undefined) {
+        const indexForce = hapticValues.index;
+        const indexNorm = Math.min(1, Math.max(0, (indexForce - forceMin) / forceRange));
+        const indexPercent = indexNorm * 100;
+        indexBar.style.height = indexPercent + '%';
+        indexBar.style.background = getForceBarGradient(indexNorm);
+        if (indexValue) indexValue.textContent = indexForce.toFixed(1);
+    } else {
+        indexBar.style.height = '0%';
+        if (indexValue) indexValue.textContent = '--';
+    }
+}
+
+/**
+ * Get color for force bar based on normalized value
+ */
+function getForceBarGradient(normalizedForce) {
+    // Returns a solid color based on force level
+    const p = Math.min(1, Math.max(0, normalizedForce));
+
+    let r, g, b;
+    if (p < 0.5) {
+        // Green to yellow
+        r = Math.round(p * 2 * 255);
+        g = 255;
+        b = 0;
+    } else {
+        // Yellow to red
+        r = 255;
+        g = Math.round((1 - (p - 0.5) * 2) * 255);
+        b = 0;
+    }
+
+    return `rgb(${r}, ${g}, ${b})`;
 }
 
 /**
@@ -5219,25 +5515,63 @@ function getForceColor(normalizedForce) {
 /**
  * 根据当前时间获取触觉数据值
  */
+let hapticTimeDebugCounter = 0;
+let hapticTimeOffset = null; // Auto-calculated offset to align hand and haptic timestamps
+
 function getHapticValueAtTime(currentTime) {
     if (!hapticData || !hapticData.timestamps || hapticData.timestamps.length === 0) {
         return null;
     }
 
-    // 应用时间偏移：正值表示触觉数据相对于手部数据延后
-    // 所以查询时需要用 currentTime - offset
-    const adjustedTime = currentTime - hapticSettings.timeOffset;
+    // Auto-calculate time offset on first call (align start times)
+    if (hapticTimeOffset === null && handTimestamps.length > 0) {
+        const handStart = handTimestamps[0];
+        const hapticStart = hapticData.timestamps[0];
+        hapticTimeOffset = handStart - hapticStart;
+        console.log('Auto-calculated haptic time offset:', hapticTimeOffset,
+            '(hand starts at', handStart, ', haptic starts at', hapticStart, ')');
+    }
 
-    // 找到最近的时间戳索引
+    // Convert hand time to haptic time coordinate
+    // hapticTime = handTime - hapticTimeOffset
+    const autoOffset = hapticTimeOffset || 0;
+    const adjustedTime = currentTime - autoOffset - hapticSettings.timeOffset;
+
+    // 找到最近的时间戳索引 (binary search for efficiency)
     let nearestIdx = 0;
-    let minDiff = Math.abs(hapticData.timestamps[0] - adjustedTime);
+    const timestamps = hapticData.timestamps;
 
-    for (let i = 1; i < hapticData.timestamps.length; i++) {
-        const diff = Math.abs(hapticData.timestamps[i] - adjustedTime);
-        if (diff < minDiff) {
-            minDiff = diff;
-            nearestIdx = i;
+    // Binary search
+    let left = 0, right = timestamps.length - 1;
+    while (left < right) {
+        const mid = Math.floor((left + right) / 2);
+        if (timestamps[mid] < adjustedTime) {
+            left = mid + 1;
+        } else {
+            right = mid;
         }
+    }
+
+    // Check which neighbor is closer
+    nearestIdx = left;
+    if (left > 0 && Math.abs(timestamps[left - 1] - adjustedTime) < Math.abs(timestamps[left] - adjustedTime)) {
+        nearestIdx = left - 1;
+    }
+
+    const minDiff = Math.abs(timestamps[nearestIdx] - adjustedTime);
+
+    // Debug: log time matching info
+    if (hapticTimeDebugCounter++ < 10) {
+        const hapticTimeRange = [timestamps[0], timestamps[timestamps.length - 1]];
+        console.log('getHapticValueAtTime:', {
+            currentTime,
+            adjustedTime,
+            hapticTimeRange,
+            nearestIdx,
+            minDiff,
+            thumbForce: hapticData.sensors?.thumb?.total?.[nearestIdx],
+            indexForce: hapticData.sensors?.index?.total?.[nearestIdx]
+        });
     }
 
     // 提取各传感器的力值

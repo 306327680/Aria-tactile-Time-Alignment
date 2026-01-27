@@ -245,6 +245,116 @@
             color: #1565c0;
         }
 
+        /* Force Progress Bars Styles */
+        .force-bars-panel {
+            width: 140px;
+            min-width: 140px;
+            background: linear-gradient(180deg, #fff 0%, #f8f9fa 100%);
+            border-radius: 8px;
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .force-bars-row {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+        }
+
+        .force-bar-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .force-bar-label {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            justify-content: center;
+        }
+
+        .finger-icon {
+            font-size: 0.9rem;
+        }
+
+        .finger-name {
+            font-weight: 600;
+            color: #495057;
+            font-size: 0.75rem;
+        }
+
+        .force-bar-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+        }
+
+        .force-bar-track {
+            flex: 1;
+            min-height: 400px;
+            width: 100%;
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .force-bar-fill {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 0%;
+            border-radius: 0 0 3px 3px;
+            transition: height 0.15s ease-out;
+            background: #4caf50;
+        }
+
+        .force-bar-scale {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.6rem;
+            color: #6c757d;
+            padding: 0 1px;
+        }
+
+        .force-bar-value {
+            text-align: center;
+            font-weight: 700;
+            font-size: 0.8rem;
+            color: #212529;
+            background: #fff;
+            padding: 2px 4px;
+            border-radius: 3px;
+            border: 1px solid #dee2e6;
+        }
+
+        .force-legend {
+            padding-top: 6px;
+            margin-top: 6px;
+            border-top: 1px solid #dee2e6;
+        }
+
+        .force-gradient {
+            height: 6px;
+            background: linear-gradient(90deg, #4caf50 0%, #ffeb3b 50%, #f44336 100%);
+            border-radius: 3px;
+        }
+
+        .force-legend-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.55rem;
+            color: #6c757d;
+            margin-top: 2px;
+        }
+
     </style>
 </head>
 <body>
@@ -331,12 +441,18 @@
                     <!-- STL file list (collapsible) -->
                     <div id="stl-file-list" style="font-size: 0.8rem; color: #6c757d; max-height: 60px; overflow-y: auto; display: none; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; margin-bottom: 12px; padding: 8px; background: #f8f9fa; border-radius: 4px;"></div>
 
-                    <div style="display: flex; align-items: center; gap: 15px;">
-                        <button type="submit" id="loadBtn" class="btn-primary" disabled style="padding: 8px 20px;">
-                            <span class="btn-icon">📈</span>
-                            <span>加载并可视化</span>
-                        </button>
-                        <a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank" style="font-size: 0.8rem; color: #667eea;">STL 文件来源: SO-ARM100</a>
+                    <div style="display: flex; align-items: flex-start; gap: 15px;">
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <button type="submit" id="loadBtn" class="btn-primary" disabled style="padding: 8px 20px;">
+                                <span class="btn-icon">📈</span>
+                                <span>加载并可视化</span>
+                            </button>
+                            <a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank" style="font-size: 0.8rem; color: #667eea;">STL 文件来源: SO-ARM100</a>
+                        </div>
+                        <!-- File Load Status Box -->
+                        <div id="file-status-box" style="flex: 1; padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.75rem; font-family: monospace; max-height: 100px; overflow-y: auto;">
+                            <div style="color: #6c757d;">等待加载文件...</div>
+                        </div>
                     </div>
                 </form>
             </section>
@@ -385,10 +501,51 @@
                     </div>
                 </div>
                 
-                <div class="visualization-container" style="margin: 0 10px 10px 10px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-                    <div class="view-container">
+                <div class="visualization-container" style="margin: 0 10px 10px 10px; padding: 15px; background: #f8f9fa; border-radius: 8px; display: flex; gap: 15px; align-items: center;">
+                    <div class="view-container" style="flex: 1;">
                         <h3 style="margin: 0 0 10px 0;">夹爪模型 + 映射手部点</h3>
                         <canvas id="gripper-canvas"></canvas>
+                    </div>
+                    <!-- Force Progress Bars Panel -->
+                    <div id="force-bars-panel" class="force-bars-panel" style="display: none; height: auto; align-self: center;">
+                        <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 0.85rem; text-align: center;">指尖力</h4>
+
+                        <div class="force-bars-row">
+                            <!-- Thumb Force Bar -->
+                            <div class="force-bar-container">
+                                <div class="force-bar-label">
+                                    <span class="finger-icon">👍</span>
+                                    <span class="finger-name">拇</span>
+                                </div>
+                                <div class="force-bar-wrapper">
+                                    <div class="force-bar-track">
+                                        <div id="thumb-force-bar" class="force-bar-fill"></div>
+                                    </div>
+                                </div>
+                                <div id="thumb-force-value" class="force-bar-value">--</div>
+                            </div>
+
+                            <!-- Index Force Bar -->
+                            <div class="force-bar-container">
+                                <div class="force-bar-label">
+                                    <span class="finger-icon">☝️</span>
+                                    <span class="finger-name">食</span>
+                                </div>
+                                <div class="force-bar-wrapper">
+                                    <div class="force-bar-track">
+                                        <div id="index-force-bar" class="force-bar-fill"></div>
+                                    </div>
+                                </div>
+                                <div id="index-force-value" class="force-bar-value">--</div>
+                            </div>
+                        </div>
+
+                        <!-- Force Max Input -->
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #dee2e6;">
+                            <span style="font-size: 0.7rem; color: #666;">最大</span>
+                            <input type="number" id="force-bar-max" value="174" min="1" step="10" style="width: 50px; padding: 2px 4px; font-size: 0.7rem; border: 1px solid #dee2e6; border-radius: 3px; text-align: center;">
+                            <span style="font-size: 0.7rem; color: #666;">N</span>
+                        </div>
                     </div>
                 </div>
 
