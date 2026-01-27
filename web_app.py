@@ -65,13 +65,14 @@ def allowed_file(filename, extensions):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in extensions
 
 
-def create_plotly_figure(aligner, segments=None):
+def create_plotly_figure(aligner, segments=None, force_max_threshold=None):
     """
     Create interactive Plotly figure for alignment visualization.
 
     Args:
         aligner: AriaHapticAligner instance with alignment results
         segments: Optional list of (split_time, segment_index) tuples
+        force_max_threshold: Optional max force threshold - values above this are not displayed
 
     Returns:
         Plotly figure as JSON
@@ -83,14 +84,31 @@ def create_plotly_figure(aligner, segments=None):
     print(f"DEBUG: Haptic time range: {aligner.haptic_timestamps[0]:.3f} - {aligner.haptic_timestamps[-1]:.3f}")
     print(f"DEBUG: Aria distance range: {aligner.aria_distance.min():.6f} - {aligner.aria_distance.max():.6f}")
     print(f"DEBUG: Haptic force range: {aligner.haptic_force.min():.6f} - {aligner.haptic_force.max():.6f}")
+    if force_max_threshold:
+        print(f"DEBUG: Force max threshold: {force_max_threshold}")
 
     # Check for valid data
     if len(aligner.aria_timestamps) == 0 or len(aligner.haptic_timestamps) == 0:
         raise ValueError("Empty data arrays provided")
 
+    # Create a copy of haptic force for display (mask values above threshold)
+    haptic_force_display = aligner.haptic_force.copy()
+    if force_max_threshold and force_max_threshold > 0:
+        # Set values above threshold to NaN so they won't be displayed
+        haptic_force_display = np.where(haptic_force_display <= force_max_threshold, haptic_force_display, np.nan)
+        print(f"DEBUG: Masked {np.sum(np.isnan(haptic_force_display))} values above threshold")
+
     # Normalize signals with safety checks
     aria_distance_range = aligner.aria_distance.max() - aligner.aria_distance.min()
-    haptic_force_range = aligner.haptic_force.max() - aligner.haptic_force.min()
+
+    # For haptic normalization, use threshold as max if provided
+    if force_max_threshold and force_max_threshold > 0:
+        haptic_min = 0  # Use 0 as min for force
+        haptic_max = force_max_threshold  # Use threshold as max
+    else:
+        haptic_min = np.nanmin(haptic_force_display)
+        haptic_max = np.nanmax(haptic_force_display)
+    haptic_force_range = haptic_max - haptic_min
 
     if aria_distance_range <= 0:
         print(f"WARNING: Aria distance range is zero or negative: {aria_distance_range}")
@@ -100,102 +118,114 @@ def create_plotly_figure(aligner, segments=None):
 
     if haptic_force_range <= 0:
         print(f"WARNING: Haptic force range is zero or negative: {haptic_force_range}")
-        haptic_norm = np.zeros_like(aligner.haptic_force)
+        haptic_norm = np.zeros_like(haptic_force_display)
     else:
-        haptic_norm = (aligner.haptic_force - aligner.haptic_force.min()) / haptic_force_range
+        haptic_norm = (haptic_force_display - haptic_min) / haptic_force_range
 
-    # Check for NaN values
-    if np.any(np.isnan(aria_norm)) or np.any(np.isnan(haptic_norm)):
-        print("WARNING: NaN values detected in normalized data")
+    # Check for NaN values in aria_norm only (haptic NaN is intentional for threshold filtering)
+    if np.any(np.isnan(aria_norm)):
+        print("WARNING: NaN values detected in aria normalized data")
         aria_norm = np.nan_to_num(aria_norm, nan=0.0)
-        haptic_norm = np.nan_to_num(haptic_norm, nan=0.0)
 
     aria_inverted = 1.0 - aria_norm
 
+    # Count NaN values in haptic (these are intentional from threshold filtering)
+    haptic_nan_count = np.sum(np.isnan(haptic_norm))
     print(f"DEBUG: Normalization complete")
-    print(f"DEBUG: Aria norm range: {aria_norm.min():.3f} - {aria_norm.max():.3f}")
-    print(f"DEBUG: Haptic norm range: {haptic_norm.min():.3f} - {haptic_norm.max():.3f}")
+    print(f"DEBUG: Aria norm range: {np.nanmin(aria_norm):.3f} - {np.nanmax(aria_norm):.3f}")
+    print(f"DEBUG: Haptic norm range: {np.nanmin(haptic_norm):.3f} - {np.nanmax(haptic_norm):.3f} ({haptic_nan_count} NaN values filtered)")
 
-    # Create subplots
+    # Create subplots with secondary y-axes for rows 1 and 2
     fig = make_subplots(
         rows=3, cols=1,
         subplot_titles=(
-            'Before Alignment',
-            f'After Alignment (offset = {aligner.optimal_offset:.3f}s)',
-            'Similarity Score vs Time Offset'
+            'Before Alignment (对齐前)',
+            f'After Alignment (对齐后, offset = {aligner.optimal_offset:.3f}s)',
+            'Similarity Score vs Time Offset (相似度曲线)'
         ),
         vertical_spacing=0.12,
-        row_heights=[0.35, 0.35, 0.30]
+        row_heights=[0.35, 0.35, 0.30],
+        specs=[
+            [{"secondary_y": True}],  # Row 1: dual y-axis
+            [{"secondary_y": True}],  # Row 2: dual y-axis
+            [{"secondary_y": False}]  # Row 3: single y-axis
+        ]
     )
 
     # Plot 1: Before alignment
     print(f"DEBUG: Adding Plot 1 traces")
-    print(f"DEBUG: Aria trace - x length: {len(aligner.aria_timestamps)}, y length: {len(aria_inverted)}")
-    print(f"DEBUG: Haptic trace - x length: {len(aligner.haptic_timestamps)}, y length: {len(haptic_norm)}")
+    print(f"DEBUG: Aria trace - x length: {len(aligner.aria_timestamps)}, y length: {len(aligner.aria_distance)}")
+    print(f"DEBUG: Haptic trace - x length: {len(aligner.haptic_timestamps)}, y length: {len(haptic_force_display)}")
 
     # Check data ranges for overlap
     aria_time_min, aria_time_max = aligner.aria_timestamps[0], aligner.aria_timestamps[-1]
     haptic_time_min, haptic_time_max = aligner.haptic_timestamps[0], aligner.haptic_timestamps[-1]
     print(f"DEBUG: Time overlap check: Aria [{aria_time_min:.2f}, {aria_time_max:.2f}], Haptic [{haptic_time_min:.2f}, {haptic_time_max:.2f}]")
 
-    # Convert to lists to ensure compatibility
+    # Convert to lists to ensure compatibility - use REAL values, not normalized
     aria_x = aligner.aria_timestamps.tolist() if hasattr(aligner.aria_timestamps, 'tolist') else list(aligner.aria_timestamps)
-    aria_y = aria_inverted.tolist() if hasattr(aria_inverted, 'tolist') else list(aria_inverted)
+    # Use real distance values (not inverted, not normalized)
+    aria_y_real = aligner.aria_distance.tolist() if hasattr(aligner.aria_distance, 'tolist') else list(aligner.aria_distance)
     haptic_x = aligner.haptic_timestamps.tolist() if hasattr(aligner.haptic_timestamps, 'tolist') else list(aligner.haptic_timestamps)
-    haptic_y = haptic_norm.tolist() if hasattr(haptic_norm, 'tolist') else list(haptic_norm)
+    # Use real force values with threshold masking
+    haptic_y_real = haptic_force_display.tolist() if hasattr(haptic_force_display, 'tolist') else list(haptic_force_display)
 
-    print(f"DEBUG: Converted arrays to lists - aria_x: {len(aria_x)}, aria_y: {len(aria_y)}, haptic_x: {len(haptic_x)}, haptic_y: {len(haptic_y)}")
+    print(f"DEBUG: Converted arrays to lists - aria_x: {len(aria_x)}, aria_y: {len(aria_y_real)}, haptic_x: {len(haptic_x)}, haptic_y: {len(haptic_y_real)}")
 
+    # Plot 1: Before alignment - Aria distance on left Y-axis (primary)
     fig.add_trace(
         go.Scatter(
             x=aria_x,
-            y=aria_y,
-            name='Aria (inverted distance)',
+            y=aria_y_real,
+            name='Aria 距离 (m)',
             line=dict(color='blue', width=2),
             mode='lines'
         ),
-        row=1, col=1
+        row=1, col=1, secondary_y=False
     )
     print(f"DEBUG: Added Aria trace to Plot 1")
 
+    # Plot 1: Haptic force on right Y-axis (secondary)
     fig.add_trace(
         go.Scatter(
             x=haptic_x,
-            y=haptic_y,
-            name='Haptic (force)',
+            y=haptic_y_real,
+            name='触觉力 (N)',
             line=dict(color='red', width=2),
             mode='lines'
         ),
-        row=1, col=1
+        row=1, col=1, secondary_y=True
     )
     print(f"DEBUG: Plot 1 traces added successfully")
 
     # Plot 2: After alignment
     haptic_aligned_x = (aligner.haptic_timestamps + aligner.optimal_offset).tolist() if hasattr(aligner.haptic_timestamps, 'tolist') else list(aligner.haptic_timestamps + aligner.optimal_offset)
 
+    # Plot 2: Aria distance on left Y-axis (primary)
     fig.add_trace(
         go.Scatter(
             x=aria_x,
-            y=aria_y,
-            name='Aria (inverted distance)',
+            y=aria_y_real,
+            name='Aria 距离 (m)',
             line=dict(color='blue', width=2),
             mode='lines',
             showlegend=False
         ),
-        row=2, col=1
+        row=2, col=1, secondary_y=False
     )
     print(f"DEBUG: Added Aria trace to Plot 2")
 
+    # Plot 2: Haptic force on right Y-axis (secondary)
     fig.add_trace(
         go.Scatter(
             x=haptic_aligned_x,
-            y=haptic_y,
-            name=f'Haptic (offset +{aligner.optimal_offset:.3f}s)',
+            y=haptic_y_real,
+            name=f'触觉力 (偏移 +{aligner.optimal_offset:.3f}s)',
             line=dict(color='red', width=2),
             mode='lines',
             showlegend=False
         ),
-        row=2, col=1
+        row=2, col=1, secondary_y=True
     )
     print(f"DEBUG: Added Haptic trace to Plot 2 (aligned)")
 
@@ -247,13 +277,51 @@ def create_plotly_figure(aligner, segments=None):
 
     print(f"DEBUG: Plot 2 x-axis range: [{x_min_plot2:.2f}, {x_max_plot2:.2f}]")
 
-    fig.update_xaxes(title_text="Time (s)", row=1, col=1, range=[x_min_plot1, x_max_plot1])
-    fig.update_xaxes(title_text="Time (s)", row=2, col=1, range=[x_min_plot2, x_max_plot2])
-    fig.update_xaxes(title_text="Time Offset (s)", row=3, col=1)
+    fig.update_xaxes(title_text="时间 (s)", row=1, col=1, range=[x_min_plot1, x_max_plot1])
+    fig.update_xaxes(title_text="时间 (s)", row=2, col=1, range=[x_min_plot2, x_max_plot2])
+    fig.update_xaxes(title_text="时间偏移 (s)", row=3, col=1)
 
-    fig.update_yaxes(title_text="Normalized Value", row=1, col=1, range=[-0.05, 1.05])
-    fig.update_yaxes(title_text="Normalized Value", row=2, col=1, range=[-0.05, 1.05])
-    fig.update_yaxes(title_text="Similarity Score", row=3, col=1)
+    # Calculate Y-axis ranges
+    aria_min, aria_max = float(np.min(aligner.aria_distance)), float(np.max(aligner.aria_distance))
+    aria_padding = (aria_max - aria_min) * 0.05
+    haptic_min = 0
+    haptic_max_val = force_max_threshold if force_max_threshold and force_max_threshold > 0 else float(np.nanmax(haptic_force_display))
+    haptic_padding = haptic_max_val * 0.05
+
+    # Update Y-axes for Plot 1 (Before Alignment)
+    fig.update_yaxes(
+        title_text="距离 (m)",
+        title_font=dict(color='blue'),
+        tickfont=dict(color='blue'),
+        range=[aria_min - aria_padding, aria_max + aria_padding],
+        row=1, col=1, secondary_y=False
+    )
+    fig.update_yaxes(
+        title_text="力 (N)",
+        title_font=dict(color='red'),
+        tickfont=dict(color='red'),
+        range=[haptic_min, haptic_max_val + haptic_padding],
+        row=1, col=1, secondary_y=True
+    )
+
+    # Update Y-axes for Plot 2 (After Alignment)
+    fig.update_yaxes(
+        title_text="距离 (m)",
+        title_font=dict(color='blue'),
+        tickfont=dict(color='blue'),
+        range=[aria_min - aria_padding, aria_max + aria_padding],
+        row=2, col=1, secondary_y=False
+    )
+    fig.update_yaxes(
+        title_text="力 (N)",
+        title_font=dict(color='red'),
+        tickfont=dict(color='red'),
+        range=[haptic_min, haptic_max_val + haptic_padding],
+        row=2, col=1, secondary_y=True
+    )
+
+    # Update Y-axis for Plot 3 (Similarity)
+    fig.update_yaxes(title_text="相似度分数", row=3, col=1)
 
     # Update layout
     fig.update_layout(
@@ -262,7 +330,7 @@ def create_plotly_figure(aligner, segments=None):
         template='plotly_white',
         hovermode='x unified',
         autosize=True,
-        margin=dict(l=50, r=50, t=80, b=50)
+        margin=dict(l=80, r=80, t=80, b=50)
     )
 
     print(f"DEBUG: Final figure creation complete")
@@ -340,6 +408,7 @@ def align():
         max_offset = float(request.form.get('max_offset', 5.0))
         method = request.form.get('method', 'xcorr')
         force_threshold = float(request.form.get('force_threshold', 1.0))
+        force_max_threshold = float(request.form.get('force_max_threshold', 500.0))
         smooth_window = int(request.form.get('smooth_window', 5))
         export_segments = request.form.get('export_segments', 'true').lower() == 'true'
 
@@ -361,6 +430,23 @@ def align():
             aligner.load_aria_data()
 
         aligner.load_haptic_data()
+
+        # Filter out force values above the max threshold
+        if force_max_threshold > 0:
+            mask = aligner.haptic_force <= force_max_threshold
+            filtered_count = np.sum(~mask)
+            if filtered_count > 0:
+                print(f"Filtering {filtered_count} haptic samples with force > {force_max_threshold}N")
+                # Replace values above threshold with NaN, then interpolate or use median
+                aligner.haptic_force = np.where(mask, aligner.haptic_force, np.nan)
+                # Fill NaN with interpolation
+                valid_mask = ~np.isnan(aligner.haptic_force)
+                if np.any(valid_mask):
+                    aligner.haptic_force = np.interp(
+                        np.arange(len(aligner.haptic_force)),
+                        np.arange(len(aligner.haptic_force))[valid_mask],
+                        aligner.haptic_force[valid_mask]
+                    )
         aligner.find_optimal_offset(max_offset=max_offset, method=method)
 
         # Detect segments
@@ -384,16 +470,24 @@ def align():
                     for split_time, idx in segments
                 ]).to_csv(index=False)
 
-        # Create plotly figure
-        plotly_json = create_plotly_figure(aligner, segments)
+        # Create plotly figure with threshold for display
+        plotly_json = create_plotly_figure(aligner, segments, force_max_threshold)
 
         # Prepare normalized data for interactive slider
         aria_norm = (aligner.aria_distance - aligner.aria_distance.min()) / \
                     (aligner.aria_distance.max() - aligner.aria_distance.min())
         aria_inverted = 1.0 - aria_norm
 
-        haptic_norm = (aligner.haptic_force - aligner.haptic_force.min()) / \
-                      (aligner.haptic_force.max() - aligner.haptic_force.min())
+        # For haptic normalization in slider, also apply threshold
+        haptic_display = aligner.haptic_force.copy()
+        if force_max_threshold > 0:
+            haptic_display = np.where(haptic_display <= force_max_threshold, haptic_display, np.nan)
+        haptic_min = 0
+        haptic_max = force_max_threshold if force_max_threshold > 0 else np.nanmax(haptic_display)
+        haptic_norm = (haptic_display - haptic_min) / (haptic_max - haptic_min)
+
+        # Count filtered samples
+        filtered_count = int(np.sum(np.isnan(haptic_norm))) if force_max_threshold > 0 else 0
 
         # Prepare results
         results = {
@@ -404,6 +498,8 @@ def align():
             'haptic_time_range': [float(aligner.haptic_timestamps[0]), float(aligner.haptic_timestamps[-1])],
             'aria_sample_count': len(aligner.aria_timestamps),
             'haptic_sample_count': len(aligner.haptic_timestamps),
+            'haptic_filtered_count': filtered_count,
+            'force_max_threshold': force_max_threshold,
             'segment_count': len(segments) if segments else 0,
             'plotly_json': plotly_json,
             'segments_csv': csv_data,
@@ -1133,12 +1229,15 @@ except ImportError as e:
 _vrs_provider = None
 _vrs_path = None
 _vrs_cameras = []
+_vrs_time_range_ns = [0, 0]
+_vrs_num_frames = 0
+_vrs_rgb_stream_id = None
 
 
 @app.route('/gripper/init_vrs', methods=['POST'])
 def init_vrs():
     """Initialize VRS session for video frame extraction"""
-    global _vrs_provider, _vrs_path, _vrs_cameras
+    global _vrs_provider, _vrs_path, _vrs_cameras, _vrs_time_range_ns, _vrs_num_frames, _vrs_rgb_stream_id
 
     print("[init_vrs] VRS_PROVIDER_AVAILABLE:", VRS_PROVIDER_AVAILABLE)
 
@@ -1165,17 +1264,42 @@ def init_vrs():
         _vrs_path = vrs_path
         print(f"[init_vrs] VRS provider created: {_vrs_provider}")
 
-        # Get available cameras/streams
+        # Get available cameras/streams and time range
         _vrs_cameras = []
+        _vrs_time_range_ns = [0, 0]
+        rgb_stream_id = None
         try:
             all_streams = _vrs_provider.get_all_streams()
             for stream_id in all_streams:
                 try:
                     label = _vrs_provider.get_label_from_stream_id(stream_id)
                     _vrs_cameras.append(label)
+                    # Find RGB camera stream for time range
+                    if 'rgb' in label.lower() and rgb_stream_id is None:
+                        rgb_stream_id = stream_id
                 except:
                     pass
             print(f"[init_vrs] Available cameras: {_vrs_cameras}")
+
+            # Get time range from RGB stream (or first stream)
+            if rgb_stream_id is None and len(all_streams) > 0:
+                rgb_stream_id = all_streams[0]
+
+            if rgb_stream_id is not None:
+                _vrs_rgb_stream_id = rgb_stream_id
+                _vrs_num_frames = _vrs_provider.get_num_data(rgb_stream_id)
+                if _vrs_num_frames > 0:
+                    # Get first frame timestamp
+                    first_result = _vrs_provider.get_image_data_by_index(rgb_stream_id, 0)
+                    if first_result and len(first_result) >= 2:
+                        _vrs_time_range_ns[0] = first_result[1].capture_timestamp_ns
+
+                    # Get last frame timestamp
+                    last_result = _vrs_provider.get_image_data_by_index(rgb_stream_id, _vrs_num_frames - 1)
+                    if last_result and len(last_result) >= 2:
+                        _vrs_time_range_ns[1] = last_result[1].capture_timestamp_ns
+
+                    print(f"[init_vrs] Time range: {_vrs_time_range_ns[0]/1e9:.3f}s - {_vrs_time_range_ns[1]/1e9:.3f}s ({_vrs_num_frames} frames)")
         except Exception as e:
             print(f"[init_vrs] Error getting streams: {e}")
 
@@ -1183,7 +1307,10 @@ def init_vrs():
             'success': True,
             'vrs_path': vrs_path,
             'cameras': _vrs_cameras,
-            'has_vrs': _vrs_provider is not None
+            'has_vrs': _vrs_provider is not None,
+            'time_range_ns': _vrs_time_range_ns,
+            'time_range_s': [_vrs_time_range_ns[0] / 1e9, _vrs_time_range_ns[1] / 1e9],
+            'num_frames': _vrs_num_frames
         })
 
     except Exception as e:
@@ -1198,8 +1325,8 @@ def init_vrs():
 
 @app.route('/gripper/video_frame', methods=['GET'])
 def get_video_frame():
-    """Get video frame at specified timestamp"""
-    global _vrs_provider, _vrs_cameras
+    """Get video frame at specified timestamp or frame index"""
+    global _vrs_provider, _vrs_cameras, _vrs_time_range_ns, _vrs_num_frames, _vrs_rgb_stream_id
 
     if not VRS_PROVIDER_AVAILABLE:
         return jsonify({'error': 'projectaria_tools not available'}), 400
@@ -1212,66 +1339,73 @@ def get_video_frame():
         import base64
         from PIL import Image
 
+        # Support both frame_index and timestamp parameters
+        frame_index = request.args.get('frame_index', type=int)
         timestamp_s = request.args.get('timestamp', type=float)
         camera = request.args.get('camera', 'camera-rgb')
 
-        # Convert to nanoseconds (hand timestamps are in seconds)
-        # If timestamp is 0 or not provided, get first frame by index
-        use_first_frame = timestamp_s is None or timestamp_s <= 0
-        timestamp_ns = None if use_first_frame else int(timestamp_s * 1e9)
-
-        print(f"[video_frame] Requesting frame at {timestamp_s}s ({timestamp_ns}ns) from camera {camera}")
-
-        # Find the stream ID for the requested camera
-        stream_id = None
+        # Use cached RGB stream if available
+        stream_id = _vrs_rgb_stream_id
         actual_camera = camera
 
-        # Try to find matching stream
-        all_streams = _vrs_provider.get_all_streams()
-        for sid in all_streams:
-            try:
-                label = _vrs_provider.get_label_from_stream_id(sid)
-                if camera == label or camera in label or label in camera:
-                    stream_id = sid
-                    actual_camera = label
-                    break
-            except:
-                continue
-
-        # If not found, try RGB camera specifically
+        # If no cached stream, find one
         if stream_id is None:
+            all_streams = _vrs_provider.get_all_streams()
             for sid in all_streams:
                 try:
                     label = _vrs_provider.get_label_from_stream_id(sid)
-                    if 'rgb' in label.lower():
+                    if camera == label or camera in label or label in camera:
                         stream_id = sid
                         actual_camera = label
-                        print(f"[video_frame] Using RGB camera: {label}")
                         break
                 except:
                     continue
 
-        # If still not found, use first image stream
-        if stream_id is None and len(all_streams) > 0:
-            stream_id = all_streams[0]
-            try:
-                actual_camera = _vrs_provider.get_label_from_stream_id(stream_id)
-            except:
-                actual_camera = str(stream_id)
-            print(f"[video_frame] Using first available stream: {actual_camera}")
+            # If not found, try RGB camera specifically
+            if stream_id is None:
+                for sid in all_streams:
+                    try:
+                        label = _vrs_provider.get_label_from_stream_id(sid)
+                        if 'rgb' in label.lower():
+                            stream_id = sid
+                            actual_camera = label
+                            break
+                    except:
+                        continue
+
+            # If still not found, use first image stream
+            if stream_id is None and len(all_streams) > 0:
+                stream_id = all_streams[0]
+                try:
+                    actual_camera = _vrs_provider.get_label_from_stream_id(stream_id)
+                except:
+                    actual_camera = str(stream_id)
 
         if stream_id is None:
             return jsonify({'error': 'No image stream found in VRS'}), 404
 
-        # Get image data
-        if use_first_frame:
-            # Get first frame by index
-            result = _vrs_provider.get_image_data_by_index(stream_id, 0)
+        # Determine which frame to get
+        if frame_index is not None:
+            # Direct frame index access
+            target_index = max(0, min(frame_index, _vrs_num_frames - 1))
+            print(f"[video_frame] Getting frame by index: {target_index}")
+            result = _vrs_provider.get_image_data_by_index(stream_id, target_index)
+        elif timestamp_s is not None and _vrs_time_range_ns[0] > 0:
+            # Convert relative timestamp (0 to duration) to frame index
+            # This is more reliable than using device timestamps directly
+            duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+            if duration_s > 0 and _vrs_num_frames > 0:
+                # Calculate frame index based on relative position
+                relative_pos = timestamp_s / duration_s if duration_s > 0 else 0
+                target_index = int(relative_pos * (_vrs_num_frames - 1))
+                target_index = max(0, min(target_index, _vrs_num_frames - 1))
+                print(f"[video_frame] Timestamp {timestamp_s:.3f}s -> frame index {target_index} (duration: {duration_s:.3f}s, frames: {_vrs_num_frames})")
+                result = _vrs_provider.get_image_data_by_index(stream_id, target_index)
+            else:
+                result = _vrs_provider.get_image_data_by_index(stream_id, 0)
         else:
-            # Get frame by timestamp
-            result = _vrs_provider.get_image_data_by_time_ns(
-                stream_id, timestamp_ns, TimeDomain.DEVICE_TIME
-            )
+            # Get first frame
+            result = _vrs_provider.get_image_data_by_index(stream_id, 0)
 
         if result is None:
             return jsonify({'error': f'No frame found for timestamp {timestamp_s}s'}), 404

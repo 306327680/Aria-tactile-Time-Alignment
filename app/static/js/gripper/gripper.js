@@ -5449,6 +5449,10 @@ function updateForceBars(hapticValues) {
     const forceMax = hapticSettings.forceMax;
     const forceRange = forceMax - forceMin;
 
+    // Get force threshold (values above this are not displayed)
+    const thresholdInput = document.getElementById('force-threshold');
+    const forceThreshold = thresholdInput ? parseFloat(thresholdInput.value) || Infinity : Infinity;
+
     // Update max labels
     if (thumbMaxLabel) thumbMaxLabel.textContent = forceMax;
     if (indexMaxLabel) indexMaxLabel.textContent = forceMax;
@@ -5456,11 +5460,20 @@ function updateForceBars(hapticValues) {
     // Update thumb bar
     if (hapticValues && hapticValues.thumb !== undefined) {
         const thumbForce = hapticValues.thumb;
-        const thumbNorm = Math.min(1, Math.max(0, (thumbForce - forceMin) / forceRange));
-        const thumbPercent = thumbNorm * 100;
-        thumbBar.style.height = thumbPercent + '%';
-        thumbBar.style.background = getForceBarGradient(thumbNorm);
-        if (thumbValue) thumbValue.textContent = thumbForce.toFixed(1);
+        // Check threshold - if exceeded, show as invalid/hidden
+        if (thumbForce > forceThreshold) {
+            thumbBar.style.height = '0%';
+            thumbBar.style.background = '#ccc';
+            if (thumbValue) thumbValue.textContent = '超限';
+            if (thumbValue) thumbValue.style.color = '#e53935';
+        } else {
+            const thumbNorm = Math.min(1, Math.max(0, (thumbForce - forceMin) / forceRange));
+            const thumbPercent = thumbNorm * 100;
+            thumbBar.style.height = thumbPercent + '%';
+            thumbBar.style.background = getForceBarGradient(thumbNorm);
+            if (thumbValue) thumbValue.textContent = thumbForce.toFixed(1);
+            if (thumbValue) thumbValue.style.color = '#495057';
+        }
     } else {
         thumbBar.style.height = '0%';
         if (thumbValue) thumbValue.textContent = '--';
@@ -5469,11 +5482,20 @@ function updateForceBars(hapticValues) {
     // Update index bar
     if (hapticValues && hapticValues.index !== undefined) {
         const indexForce = hapticValues.index;
-        const indexNorm = Math.min(1, Math.max(0, (indexForce - forceMin) / forceRange));
-        const indexPercent = indexNorm * 100;
-        indexBar.style.height = indexPercent + '%';
-        indexBar.style.background = getForceBarGradient(indexNorm);
-        if (indexValue) indexValue.textContent = indexForce.toFixed(1);
+        // Check threshold - if exceeded, show as invalid/hidden
+        if (indexForce > forceThreshold) {
+            indexBar.style.height = '0%';
+            indexBar.style.background = '#ccc';
+            if (indexValue) indexValue.textContent = '超限';
+            if (indexValue) indexValue.style.color = '#e53935';
+        } else {
+            const indexNorm = Math.min(1, Math.max(0, (indexForce - forceMin) / forceRange));
+            const indexPercent = indexNorm * 100;
+            indexBar.style.height = indexPercent + '%';
+            indexBar.style.background = getForceBarGradient(indexNorm);
+            if (indexValue) indexValue.textContent = indexForce.toFixed(1);
+            if (indexValue) indexValue.style.color = '#495057';
+        }
     } else {
         indexBar.style.height = '0%';
         if (indexValue) indexValue.textContent = '--';
@@ -5737,12 +5759,19 @@ function updateManoHapticColors(currentTime) {
         const mappingMin = hapticSettings.forceMin;
         const mappingMax = hapticSettings.forceMax;
 
+        // Get force threshold from UI
+        const thresholdInput = document.getElementById('force-threshold');
+        const forceThreshold = thresholdInput ? parseFloat(thresholdInput.value) || Infinity : Infinity;
+
         for (const [finger, tipPos] of Object.entries(fingertipPositions)) {
             const force = hapticValues[finger];
             if (force === undefined) continue;
 
             // 如果力值小于映射下限，不着色
             if (force < mappingMin) continue;
+
+            // 如果力值超过阈值，不着色（视为无效数据）
+            if (force > forceThreshold) continue;
 
             const dist = vertPos.distanceTo(tipPos);
             if (dist < influenceRadius) {

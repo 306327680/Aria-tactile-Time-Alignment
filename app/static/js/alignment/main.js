@@ -144,6 +144,7 @@ alignBtn.addEventListener('click', async function() {
         formData.append('max_offset', document.getElementById('max_offset').value);
         formData.append('method', document.getElementById('method').value);
         formData.append('force_threshold', document.getElementById('force_threshold').value);
+        formData.append('force_max_threshold', document.getElementById('force_max_threshold').value);
         formData.append('smooth_window', document.getElementById('smooth_window').value);
         formData.append('export_segments', document.getElementById('export_segments').checked);
 
@@ -179,7 +180,14 @@ function displayResults(data) {
     document.getElementById('optimal-offset').textContent = data.optimal_offset.toFixed(3);
     document.getElementById('similarity-score').textContent = data.max_similarity.toFixed(4);
     document.getElementById('aria-samples').textContent = data.aria_sample_count.toLocaleString();
-    document.getElementById('haptic-samples').textContent = data.haptic_sample_count.toLocaleString();
+
+    // Show haptic samples with filtered count if any
+    let hapticText = data.haptic_sample_count.toLocaleString();
+    if (data.haptic_filtered_count && data.haptic_filtered_count > 0) {
+        hapticText += ` (${data.haptic_filtered_count} 超过阈值 ${data.force_max_threshold}N 被过滤)`;
+    }
+    document.getElementById('haptic-samples').textContent = hapticText;
+
     document.getElementById('segment-count').textContent = data.segment_count;
     document.getElementById('method-used').textContent = data.method.toUpperCase();
 
@@ -256,6 +264,21 @@ function displayResults(data) {
     setTimeout(() => {
         resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
+
+    // Initialize VRS video player if VRS file is selected
+    const vrsVideoFileInput = document.getElementById('vrs_video_file');
+    if (vrsVideoFileInput && vrsVideoFileInput.files[0]) {
+        // Set time range from alignment data
+        if (data.aria_timestamps && data.aria_timestamps.length > 0) {
+            vrsTimeRange = [
+                Math.min(...data.aria_timestamps),
+                Math.max(...data.aria_timestamps)
+            ];
+            vrsCurrentTime = vrsTimeRange[0];
+        }
+        // Initialize VRS session
+        initVRSSession();
+    }
 }
 
 // Display error
@@ -397,8 +420,271 @@ resetOffsetBtn.addEventListener('click', function() {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
     checkFormValidity();
+    initVRSVideoPlayer();
     console.log('Aria-Haptic Alignment Tool initialized');
 });
+
+// ==================== VRS Video Player ====================
+let vrsVideoInitialized = false;
+let vrsVideoPlaying = false;
+let vrsPlaybackInterval = null;
+let vrsCurrentTime = 0;
+let vrsTimeRange = [0, 100];  // [min, max] in seconds
+let vrsPlaybackSpeed = 1;
+let currentTimelineShape = null;  // Store the vertical line shape
+
+// Initialize VRS video player
+function initVRSVideoPlayer() {
+    const vrsVideoFileInput = document.getElementById('vrs_video_file');
+    const vrsVideoInfo = document.getElementById('vrs-video-info');
+
+    if (!vrsVideoFileInput) return;
+
+    // File selection handler
+    vrsVideoFileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            vrsVideoInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+            // Don't initialize VRS session yet - wait until alignment is done
+        } else {
+            vrsVideoInfo.textContent = '未选择文件';
+        }
+    });
+
+    // Play button
+    const playBtn = document.getElementById('video-play-btn');
+    if (playBtn) {
+        playBtn.addEventListener('click', function() {
+            if (vrsVideoPlaying) {
+                pauseVRSVideo();
+                this.textContent = '▶ 播放';
+            } else {
+                playVRSVideo();
+                this.textContent = '⏸ 暂停';
+            }
+        });
+    }
+
+    // Stop button
+    const stopBtn = document.getElementById('video-stop-btn');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', function() {
+            stopVRSVideo();
+            const playBtn = document.getElementById('video-play-btn');
+            if (playBtn) playBtn.textContent = '▶ 播放';
+        });
+    }
+
+    // Speed selector
+    const speedSelect = document.getElementById('video-speed');
+    if (speedSelect) {
+        speedSelect.addEventListener('change', function(e) {
+            vrsPlaybackSpeed = parseFloat(e.target.value);
+        });
+    }
+
+    // Time slider
+    const timeSlider = document.getElementById('video-time-slider');
+    if (timeSlider) {
+        timeSlider.addEventListener('input', function(e) {
+            const percent = parseFloat(e.target.value);
+            vrsCurrentTime = vrsTimeRange[0] + (vrsTimeRange[1] - vrsTimeRange[0]) * (percent / 100);
+            updateVRSVideoFrame(vrsCurrentTime);
+            updateTimelineIndicator(vrsCurrentTime);
+        });
+    }
+}
+
+// Global variables for VRS video
+let vrsNumFrames = 0;
+let vrsDuration = 0;
+
+// Initialize VRS session after alignment results are ready
+async function initVRSSession() {
+    const vrsVideoFileInput = document.getElementById('vrs_video_file');
+    if (!vrsVideoFileInput || !vrsVideoFileInput.files[0]) {
+        return false;
+    }
+
+    const vrsFile = vrsVideoFileInput.files[0];
+    const loadingEl = document.getElementById('vrs-video-loading');
+
+    try {
+        if (loadingEl) loadingEl.style.display = 'block';
+
+        console.log('Uploading VRS file for video playback:', vrsFile.name);
+
+        const formData = new FormData();
+        formData.append('vrs_file', vrsFile);
+
+        const response = await fetch('/gripper/init_vrs', {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+        console.log('VRS init response:', result);
+
+        if (response.ok && result.success) {
+            vrsVideoInitialized = true;
+            console.log('VRS session initialized for video playback');
+
+            // Show video panel
+            const videoPanel = document.getElementById('vrs-video-panel');
+            if (videoPanel) videoPanel.style.display = 'block';
+
+            // Store VRS info
+            vrsNumFrames = result.num_frames || 0;
+
+            // Set time range: use VRS duration (0 to duration_seconds)
+            // The backend expects relative time from 0 to duration
+            if (result.time_range_s && result.time_range_s.length === 2) {
+                vrsDuration = result.time_range_s[1] - result.time_range_s[0];
+                vrsTimeRange = [0, vrsDuration];  // Use 0 to duration as the range
+                vrsCurrentTime = 0;
+                console.log(`VRS duration: ${vrsDuration.toFixed(3)}s, frames: ${vrsNumFrames}`);
+            }
+
+            // Fetch first frame
+            await updateVRSVideoFrame(vrsCurrentTime);
+
+            if (loadingEl) loadingEl.style.display = 'none';
+            return true;
+        } else {
+            throw new Error(result.error || 'Failed to initialize VRS session');
+        }
+    } catch (error) {
+        console.error('VRS initialization error:', error);
+        if (loadingEl) loadingEl.style.display = 'none';
+        return false;
+    }
+}
+
+// Update video frame at given timestamp
+async function updateVRSVideoFrame(timestamp) {
+    if (!vrsVideoInitialized) return;
+
+    const frameImg = document.getElementById('vrs-video-frame');
+    const timeDisplay = document.getElementById('vrs-video-time');
+    const timeSlider = document.getElementById('video-time-slider');
+
+    try {
+        const response = await fetch(`/gripper/video_frame?timestamp=${timestamp}&camera=camera-rgb`);
+        const result = await response.json();
+
+        if (response.ok && result.image) {
+            if (frameImg) frameImg.src = result.image;
+            if (timeDisplay) timeDisplay.textContent = timestamp.toFixed(3);
+
+            // Update slider position
+            if (timeSlider && vrsTimeRange[1] > vrsTimeRange[0]) {
+                const percent = ((timestamp - vrsTimeRange[0]) / (vrsTimeRange[1] - vrsTimeRange[0])) * 100;
+                timeSlider.value = Math.min(100, Math.max(0, percent));
+            }
+        }
+    } catch (error) {
+        console.error('Error fetching video frame:', error);
+    }
+}
+
+// Play VRS video
+function playVRSVideo() {
+    if (!vrsVideoInitialized || vrsVideoPlaying) return;
+
+    vrsVideoPlaying = true;
+    const frameInterval = 100;  // 10 fps base rate
+
+    vrsPlaybackInterval = setInterval(() => {
+        vrsCurrentTime += (frameInterval / 1000) * vrsPlaybackSpeed;
+
+        // Loop back to start if past end
+        if (vrsCurrentTime > vrsTimeRange[1]) {
+            vrsCurrentTime = vrsTimeRange[0];
+        }
+
+        updateVRSVideoFrame(vrsCurrentTime);
+        updateTimelineIndicator(vrsCurrentTime);
+    }, frameInterval);
+}
+
+// Pause VRS video
+function pauseVRSVideo() {
+    vrsVideoPlaying = false;
+    if (vrsPlaybackInterval) {
+        clearInterval(vrsPlaybackInterval);
+        vrsPlaybackInterval = null;
+    }
+}
+
+// Stop VRS video
+function stopVRSVideo() {
+    pauseVRSVideo();
+    vrsCurrentTime = vrsTimeRange[0];
+    updateVRSVideoFrame(vrsCurrentTime);
+    updateTimelineIndicator(vrsCurrentTime);
+}
+
+// Update vertical line indicator on plotly chart
+function updateTimelineIndicator(timestamp) {
+    const chartDiv = document.getElementById('plotly-chart');
+    if (!chartDiv || !chartDiv.data) return;
+
+    // Create vertical line shapes for the subplots
+    const shapes = [];
+
+    // Get current offset from slider
+    const currentOffset = parseFloat(offsetSlider.value) || optimalOffset || 0;
+
+    // Line for subplot 1 (Before Alignment) - x axis
+    // Before alignment shows original timestamps without offset
+    shapes.push({
+        type: 'line',
+        xref: 'x',
+        yref: 'paper',
+        x0: timestamp,
+        x1: timestamp,
+        y0: 0.70,  // Top subplot (Before Alignment)
+        y1: 1.0,
+        line: { color: '#00ff00', width: 2, dash: 'solid' }
+    });
+
+    // Line for subplot 2 (After Alignment) - x2 axis
+    shapes.push({
+        type: 'line',
+        xref: 'x2',
+        yref: 'paper',
+        x0: timestamp,
+        x1: timestamp,
+        y0: 0.35,  // Middle subplot (After Alignment)
+        y1: 0.65,
+        line: { color: '#00ff00', width: 2, dash: 'solid' }
+    });
+
+    // Line for subplot 3 (Correlation) - x3 axis
+    // This shows the offset value at the current time position
+    shapes.push({
+        type: 'line',
+        xref: 'x3',
+        yref: 'paper',
+        x0: currentOffset,
+        x1: currentOffset,
+        y0: 0.0,  // Bottom subplot (Correlation)
+        y1: 0.30,
+        line: { color: '#00ff00', width: 2, dash: 'solid' }
+    });
+
+    // Preserve existing shapes (segment lines, optimal offset line, etc.)
+    const currentLayout = chartDiv.layout || {};
+    const existingShapes = currentLayout.shapes || [];
+
+    // Filter out old timeline indicators (identified by green color)
+    const otherShapes = existingShapes.filter(s => s.line && s.line.color !== '#00ff00');
+
+    // Combine other shapes with new timeline indicators
+    const allShapes = [...otherShapes, ...shapes];
+
+    Plotly.relayout('plotly-chart', { shapes: allShapes });
+}
 
 // Add drag and drop support for file inputs
 [mpsFileInput, vrsFileInput, hapticFileInput].forEach(input => {

@@ -559,11 +559,17 @@
                             </div>
                         </div>
 
-                        <!-- Force Max Input -->
-                        <div style="display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #dee2e6;">
-                            <span style="font-size: 0.7rem; color: #666;">最大</span>
-                            <input type="number" id="force-bar-max" value="174" min="1" step="10" style="width: 50px; padding: 2px 4px; font-size: 0.7rem; border: 1px solid #dee2e6; border-radius: 3px; text-align: center;">
-                            <span style="font-size: 0.7rem; color: #666;">N</span>
+                        <!-- Force Max and Threshold Inputs -->
+                        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #dee2e6; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 3px;">
+                                <span style="font-size: 0.65rem; color: #666;">最大</span>
+                                <input type="number" id="force-bar-max" value="174" min="1" step="10" style="width: 45px; padding: 2px 4px; font-size: 0.7rem; border: 1px solid #dee2e6; border-radius: 3px; text-align: center;">
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 3px;">
+                                <span style="font-size: 0.65rem; color: #e53935;">阈值</span>
+                                <input type="number" id="force-threshold" value="500" min="0" step="10" style="width: 45px; padding: 2px 4px; font-size: 0.7rem; border: 1px solid #ffcdd2; border-radius: 3px; text-align: center;">
+                            </div>
+                            <span style="font-size: 0.65rem; color: #666;">N</span>
                         </div>
                     </div>
 
