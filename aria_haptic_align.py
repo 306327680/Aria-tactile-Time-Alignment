@@ -54,6 +54,8 @@ class AriaHapticAligner:
         self.aria_distance = None
         self.haptic_timestamps = None
         self.haptic_force = None
+        self.haptic_thumb_force = None  # Separate thumb force
+        self.haptic_index_force = None  # Separate index force
 
         # Alignment results
         self.optimal_offset = None
@@ -350,6 +352,10 @@ class AriaHapticAligner:
         print(f"DEBUG: Found force columns: {total_cols}")
 
         # Extract forces based on available columns
+        # Initialize separate thumb and index forces
+        thumb_force = None
+        index_force = None
+
         if len(total_cols) >= 2:
             # Try to find ThumbTip and IndexTip for pinch force
             thumb_col = next((col for col in total_cols if 'thumb' in col.lower()), None)
@@ -358,17 +364,23 @@ class AriaHapticAligner:
             if thumb_col and index_col:
                 force1 = pd.to_numeric(df[thumb_col], errors='coerce').values
                 force2 = pd.to_numeric(df[index_col], errors='coerce').values
+                thumb_force = force1.copy()
+                index_force = force2.copy()
                 forces = force1 + force2  # Combined pinch force
                 print(f"Using pinch force columns: {thumb_col} + {index_col}")
             else:
                 # Use first two available force columns
                 force1 = pd.to_numeric(df[total_cols[0]], errors='coerce').values
                 force2 = pd.to_numeric(df[total_cols[1]], errors='coerce').values
+                thumb_force = force1.copy()
+                index_force = force2.copy()
                 forces = force1 + force2
                 print(f"Using force columns: {total_cols[0]} + {total_cols[1]}")
 
         elif len(total_cols) == 1:
             forces = pd.to_numeric(df[total_cols[0]], errors='coerce').values
+            thumb_force = forces.copy()
+            index_force = np.zeros_like(forces)
             print(f"Using single force column: {total_cols[0]}")
 
         else:
@@ -383,6 +395,8 @@ class AriaHapticAligner:
                 fy = pd.to_numeric(df[fy_cols[0]], errors='coerce').values
                 fz = pd.to_numeric(df[fz_cols[0]], errors='coerce').values
                 forces = np.sqrt(fx**2 + fy**2 + fz**2)
+                thumb_force = forces.copy()
+                index_force = np.zeros_like(forces)
                 print(f"Calculated force magnitude from: {fx_cols[0]}, {fy_cols[0]}, {fz_cols[0]}")
             else:
                 raise ValueError(f"Cannot find suitable force columns in CSV. Available columns: {df.columns.tolist()}")
@@ -398,6 +412,10 @@ class AriaHapticAligner:
 
         timestamps = timestamps[valid_mask]
         forces = forces[valid_mask]
+        if thumb_force is not None:
+            thumb_force = thumb_force[valid_mask]
+        if index_force is not None:
+            index_force = index_force[valid_mask]
 
         # ===== Timestamp normalization =====
         if normalize_timestamps:
@@ -414,6 +432,8 @@ class AriaHapticAligner:
 
         self.haptic_timestamps = timestamps
         self.haptic_force = forces
+        self.haptic_thumb_force = thumb_force
+        self.haptic_index_force = index_force
 
         # ===== Store multi-axis and multi-finger data =====
         # Store all available sensor data for advanced visualization

@@ -38,13 +38,14 @@ def create_app(config=None):
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
     # Register blueprints
-    from app.routes import main, alignment, visualization, player, gripper
+    from app.routes import main, alignment, visualization, player, gripper, data_manager
 
     app.register_blueprint(main.bp)
     app.register_blueprint(alignment.bp)
     app.register_blueprint(visualization.bp)
     app.register_blueprint(player.bp)
     app.register_blueprint(gripper.bp)
+    app.register_blueprint(data_manager.bp)
 
     # Health check endpoint
     @app.route('/health')

@@ -508,10 +508,149 @@ def align():
             'aria_normalized': aria_inverted.tolist(),
             'haptic_timestamps': aligner.haptic_timestamps.tolist(),
             'haptic_normalized': haptic_norm.tolist(),
+            'haptic_thumb_force': aligner.haptic_thumb_force.tolist() if aligner.haptic_thumb_force is not None else [],
+            'haptic_index_force': aligner.haptic_index_force.tolist() if aligner.haptic_index_force is not None else [],
             'offsets': aligner.search_offsets.tolist(),
             'correlation_scores': aligner.correlation_scores.tolist(),
             'max_offset': max_offset,
             'segments': [{'time': float(t), 'index': int(idx)} for t, idx in segments] if segments else []
+        }
+
+        return jsonify(results)
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error: {error_msg}\n{stack_trace}")
+        return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@app.route('/align_from_path', methods=['POST'])
+def align_from_path():
+    """
+    Process alignment request using server file paths.
+    This is used when loading files from the data manager.
+    """
+    try:
+        data = request.get_json()
+
+        mps_csv_path = data.get('mps_csv_path')
+        haptic_csv_path = data.get('haptic_csv_path')
+        vrs_path = data.get('vrs_path')
+
+        # Validate paths
+        if not haptic_csv_path or not os.path.exists(haptic_csv_path):
+            return jsonify({'error': f'Haptic CSV file not found: {haptic_csv_path}'}), 400
+
+        use_mps_csv = mps_csv_path and os.path.exists(mps_csv_path)
+        use_vrs = vrs_path and os.path.exists(vrs_path)
+
+        if not use_mps_csv and not use_vrs:
+            return jsonify({'error': 'Either MPS CSV or VRS file is required'}), 400
+
+        # Get parameters
+        max_offset = float(data.get('max_offset', 5.0))
+        method = data.get('method', 'xcorr')
+        force_threshold = float(data.get('force_threshold', 1.0))
+        force_max_threshold = float(data.get('force_max_threshold', 500.0))
+        smooth_window = int(data.get('smooth_window', 5))
+        export_segments = data.get('export_segments', True)
+
+        # Run alignment based on available data
+        if use_mps_csv:
+            aligner = AriaHapticAligner(mps_csv_path=mps_csv_path, haptic_csv_path=haptic_csv_path)
+            aligner.load_aria_data_from_mps_csv()
+        else:
+            aligner = AriaHapticAligner(vrs_path=vrs_path, haptic_csv_path=haptic_csv_path)
+            aligner.load_aria_data()
+
+        aligner.load_haptic_data()
+
+        # Filter out force values above the max threshold
+        if force_max_threshold > 0:
+            mask = aligner.haptic_force <= force_max_threshold
+            filtered_count = np.sum(~mask)
+            if filtered_count > 0:
+                print(f"Filtering {filtered_count} haptic samples with force > {force_max_threshold}N")
+                aligner.haptic_force = np.where(mask, aligner.haptic_force, np.nan)
+                valid_mask = ~np.isnan(aligner.haptic_force)
+                if np.any(valid_mask):
+                    aligner.haptic_force = np.interp(
+                        np.arange(len(aligner.haptic_force)),
+                        np.arange(len(aligner.haptic_force))[valid_mask],
+                        aligner.haptic_force[valid_mask]
+                    )
+
+        aligner.find_optimal_offset(max_offset=max_offset, method=method)
+
+        # Detect segments
+        segments = None
+        csv_data = None
+        if export_segments:
+            segments = aligner.detect_force_segments(
+                force_threshold=force_threshold,
+                smooth_window=smooth_window
+            )
+
+            if segments:
+                csv_data = pd.DataFrame([
+                    {
+                        'split_index': idx,
+                        'split_time_s': f'{split_time:.3f}',
+                        'before_segment': idx,
+                        'after_segment': idx + 1
+                    }
+                    for split_time, idx in segments
+                ]).to_csv(index=False)
+
+        # Create plotly figure
+        plotly_json = create_plotly_figure(aligner, segments, force_max_threshold)
+
+        # Prepare normalized data for interactive slider
+        aria_norm = (aligner.aria_distance - aligner.aria_distance.min()) / \
+                    (aligner.aria_distance.max() - aligner.aria_distance.min())
+        aria_inverted = 1.0 - aria_norm
+
+        haptic_display = aligner.haptic_force.copy()
+        if force_max_threshold > 0:
+            haptic_display = np.where(haptic_display <= force_max_threshold, haptic_display, np.nan)
+        haptic_min = 0
+        haptic_max = force_max_threshold if force_max_threshold > 0 else np.nanmax(haptic_display)
+        haptic_norm = (haptic_display - haptic_min) / (haptic_max - haptic_min)
+
+        filtered_count = int(np.sum(np.isnan(haptic_norm))) if force_max_threshold > 0 else 0
+
+        # Prepare results
+        results = {
+            'optimal_offset': float(aligner.optimal_offset),
+            'max_similarity': float(np.max(aligner.correlation_scores)),
+            'method': method,
+            'aria_time_range': [float(aligner.aria_timestamps[0]), float(aligner.aria_timestamps[-1])],
+            'haptic_time_range': [float(aligner.haptic_timestamps[0]), float(aligner.haptic_timestamps[-1])],
+            'aria_sample_count': len(aligner.aria_timestamps),
+            'haptic_sample_count': len(aligner.haptic_timestamps),
+            'haptic_filtered_count': filtered_count,
+            'force_max_threshold': force_max_threshold,
+            'segment_count': len(segments) if segments else 0,
+            'plotly_json': plotly_json,
+            'segments_csv': csv_data,
+            'aria_timestamps': aligner.aria_timestamps.tolist(),
+            'aria_normalized': aria_inverted.tolist(),
+            'haptic_timestamps': aligner.haptic_timestamps.tolist(),
+            'haptic_normalized': haptic_norm.tolist(),
+            'haptic_thumb_force': aligner.haptic_thumb_force.tolist() if aligner.haptic_thumb_force is not None else [],
+            'haptic_index_force': aligner.haptic_index_force.tolist() if aligner.haptic_index_force is not None else [],
+            'offsets': aligner.search_offsets.tolist(),
+            'correlation_scores': aligner.correlation_scores.tolist(),
+            'max_offset': max_offset,
+            'segments': [{'time': float(t), 'index': int(idx)} for t, idx in segments] if segments else [],
+            # Include source file info
+            'source_files': {
+                'mps_csv': mps_csv_path if use_mps_csv else None,
+                'haptic_csv': haptic_csv_path,
+                'vrs': vrs_path if use_vrs else None
+            }
         }
 
         return jsonify(results)
@@ -984,6 +1123,287 @@ def load_hand_landmarks(mps_csv_path):
     return hand_data
 
 
+# ==================== Data Manager Routes ====================
+# Default data root directory
+DEFAULT_DATA_ROOT = os.path.expanduser('~/Documents/Aria_data/IROS_data')
+
+
+def get_data_root():
+    """Get the configured data root directory"""
+    return os.environ.get('ARIA_DATA_ROOT', DEFAULT_DATA_ROOT)
+
+
+def scan_data_directory(directory):
+    """Scan a directory for VRS and CSV files, grouping them by base name."""
+    data_groups = {}
+    directory = Path(directory)
+
+    if not directory.exists():
+        return []
+
+    # First, scan for offset config files to know which groups have alignment
+    # Store both by exact name and by VRS-related name for matching
+    offset_configs = {}
+    offset_configs_by_vrs = {}  # Maps VRS base name to config
+    for config_file in directory.glob('*_offset_config.json'):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                base_name = config.get('base_name', config_file.stem.replace('_offset_config', ''))
+                config_data = {
+                    'current_offset': config.get('current_offset'),
+                    'optimal_offset': config.get('optimal_offset'),
+                    'similarity': config.get('similarity'),
+                    'timestamp': config.get('timestamp'),
+                    'config_path': str(config_file)
+                }
+                offset_configs[base_name] = config_data
+
+                # Also try to extract VRS name from the config's file paths
+                files_info = config.get('files', {})
+                vrs_file = files_info.get('vrs_file')
+                if vrs_file:
+                    vrs_base = Path(vrs_file).stem
+                    offset_configs_by_vrs[vrs_base] = config_data
+        except:
+            pass
+
+    # Helper function to find offset config for a base name
+    def find_offset_config(base_name):
+        # First try exact match
+        if base_name in offset_configs:
+            return offset_configs[base_name]
+        # Then try VRS-based match
+        if base_name in offset_configs_by_vrs:
+            return offset_configs_by_vrs[base_name]
+        # Finally try partial match (config name contains VRS base name)
+        base_lower = base_name.lower()
+        for config_name, config_data in offset_configs.items():
+            if base_lower in config_name.lower() or config_name.lower().startswith(base_lower):
+                return config_data
+        return None
+
+    # Scan for VRS files
+    for vrs_file in directory.glob('*.vrs'):
+        base_name = vrs_file.stem
+        if base_name not in data_groups:
+            data_groups[base_name] = {
+                'name': base_name,
+                'vrs_file': None,
+                'vrs_json': None,
+                'csv_files': [],
+                'mps_folder': None,
+                'has_hand_tracking': False,
+                'size_mb': 0,
+                'offset_config': find_offset_config(base_name)
+            }
+
+        data_groups[base_name]['vrs_file'] = str(vrs_file)
+        data_groups[base_name]['size_mb'] = round(vrs_file.stat().st_size / (1024 * 1024), 1)
+
+        json_file = vrs_file.with_suffix('.vrs.json')
+        if json_file.exists():
+            data_groups[base_name]['vrs_json'] = str(json_file)
+
+    # Scan for CSV files
+    for csv_file in directory.glob('*.csv'):
+        csv_name = csv_file.stem.lower()
+        matched = False
+
+        for base_name in list(data_groups.keys()):
+            if base_name.lower().replace('_', '') in csv_name.replace('_', ''):
+                data_groups[base_name]['csv_files'].append({
+                    'path': str(csv_file),
+                    'name': csv_file.name,
+                    'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2)
+                })
+                matched = True
+                break
+
+        if not matched:
+            csv_base = csv_file.stem
+            if csv_base not in data_groups:
+                data_groups[csv_base] = {
+                    'name': csv_base,
+                    'vrs_file': None,
+                    'vrs_json': None,
+                    'csv_files': [],
+                    'mps_folder': None,
+                    'has_hand_tracking': False,
+                    'size_mb': 0,
+                    'offset_config': find_offset_config(csv_base)
+                }
+            data_groups[csv_base]['csv_files'].append({
+                'path': str(csv_file),
+                'name': csv_file.name,
+                'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2)
+            })
+
+    # Scan for MPS folders
+    for mps_folder in directory.glob('mps_*'):
+        if mps_folder.is_dir():
+            mps_name = mps_folder.name
+            for base_name in data_groups:
+                if base_name.lower() in mps_name.lower():
+                    data_groups[base_name]['mps_folder'] = str(mps_folder)
+                    hand_tracking_file = mps_folder / 'hand_tracking' / 'hand_tracking_results.csv'
+                    if hand_tracking_file.exists():
+                        data_groups[base_name]['has_hand_tracking'] = True
+                        data_groups[base_name]['hand_tracking_file'] = str(hand_tracking_file)
+                    break
+
+    result = list(data_groups.values())
+    result.sort(key=lambda x: x['name'])
+    return result
+
+
+def scan_subdirectories(root_dir):
+    """Scan root directory for subdirectories containing data."""
+    root = Path(root_dir)
+    subdirs = []
+
+    if not root.exists():
+        return subdirs
+
+    for item in sorted(root.iterdir()):
+        if item.is_dir() and not item.name.startswith('.'):
+            vrs_count = len(list(item.glob('*.vrs')))
+            csv_count = len(list(item.glob('*.csv')))
+            mps_count = len(list(item.glob('mps_*')))
+
+            if vrs_count > 0 or csv_count > 0:
+                subdirs.append({
+                    'name': item.name,
+                    'path': str(item),
+                    'vrs_count': vrs_count,
+                    'csv_count': csv_count,
+                    'mps_count': mps_count
+                })
+
+    return subdirs
+
+
+@app.route('/data')
+def data_manager():
+    """Render data manager page"""
+    return render_template('data_manager.html',
+                         aria_api_available=ARIA_API_AVAILABLE,
+                         default_data_root=get_data_root())
+
+
+@app.route('/data/api/directories')
+def list_directories():
+    """List available data directories"""
+    root_dir = request.args.get('root', get_data_root())
+
+    try:
+        subdirs = scan_subdirectories(root_dir)
+        root_files = scan_data_directory(root_dir)
+
+        return jsonify({
+            'success': True,
+            'root': root_dir,
+            'subdirectories': subdirs,
+            'root_files': root_files
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/data/api/files')
+def list_files():
+    """List files in a specific directory"""
+    directory = request.args.get('directory', get_data_root())
+
+    try:
+        files = scan_data_directory(directory)
+        return jsonify({
+            'success': True,
+            'directory': directory,
+            'files': files
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/data/api/save_offset', methods=['POST'])
+def save_offset():
+    """Save offset configuration to a JSON file in the same directory as the data."""
+    from datetime import datetime
+    data = request.get_json()
+
+    haptic_path = data.get('haptic_path')
+    mps_path = data.get('mps_path')
+    vrs_path = data.get('vrs_path')
+    current_offset = data.get('current_offset')
+    optimal_offset = data.get('optimal_offset')
+    similarity = data.get('similarity')
+    method = data.get('method')
+    parameters = data.get('parameters', {})
+
+    # Determine save directory based on available paths
+    save_dir = None
+    base_name = None
+
+    if haptic_path and os.path.exists(haptic_path):
+        save_dir = os.path.dirname(haptic_path)
+        base_name = Path(haptic_path).stem
+    elif mps_path and os.path.exists(mps_path):
+        # MPS path is usually like /path/mps_xxx/hand_tracking/hand_tracking_results.csv
+        mps_parent = Path(mps_path).parent.parent.parent
+        if mps_parent.exists():
+            save_dir = str(mps_parent)
+            base_name = Path(mps_path).parent.parent.name.replace('mps_', '')
+    elif vrs_path and os.path.exists(vrs_path):
+        save_dir = os.path.dirname(vrs_path)
+        base_name = Path(vrs_path).stem
+
+    if not save_dir or not base_name:
+        return jsonify({
+            'success': False,
+            'error': 'Could not determine save location from provided paths'
+        }), 400
+
+    try:
+        config = {
+            'timestamp': datetime.now().isoformat(),
+            'base_name': base_name,
+            'current_offset': current_offset,
+            'optimal_offset': optimal_offset,
+            'similarity': similarity,
+            'method': method,
+            'parameters': parameters,
+            'files': {
+                'haptic_csv': haptic_path,
+                'mps_csv': mps_path,
+                'vrs_file': vrs_path
+            }
+        }
+
+        config_filename = f"{base_name}_offset_config.json"
+        config_path = os.path.join(save_dir, config_filename)
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+        return jsonify({
+            'success': True,
+            'config_path': config_path,
+            'message': f'配置已保存到 {config_filename}'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/gripper')
 def gripper():
     """Render gripper visualization page"""
@@ -1245,18 +1665,23 @@ def init_vrs():
         return jsonify({'error': 'projectaria_tools not available', 'available': False}), 400
 
     try:
+        # Check if using server path or uploaded file
+        vrs_server_path = request.form.get('vrs_server_path')
         vrs_file = request.files.get('vrs_file')
 
-        if not vrs_file or vrs_file.filename == '':
+        if vrs_server_path and os.path.exists(vrs_server_path):
+            # Use server path directly
+            vrs_path = vrs_server_path
+            print(f"[init_vrs] Using server VRS file: {vrs_path}")
+        elif vrs_file and vrs_file.filename != '':
+            # Upload and save file
+            print(f"[init_vrs] Received VRS file: {vrs_file.filename}")
+            vrs_filename = secure_filename(vrs_file.filename)
+            vrs_path = os.path.join(app.config['UPLOAD_FOLDER'], vrs_filename)
+            vrs_file.save(vrs_path)
+            print(f"[init_vrs] VRS file saved to: {vrs_path}")
+        else:
             return jsonify({'error': 'No VRS file provided'}), 400
-
-        print(f"[init_vrs] Received VRS file: {vrs_file.filename}")
-
-        # Save VRS file
-        vrs_filename = secure_filename(vrs_file.filename)
-        vrs_path = os.path.join(app.config['UPLOAD_FOLDER'], vrs_filename)
-        vrs_file.save(vrs_path)
-        print(f"[init_vrs] VRS file saved to: {vrs_path}")
 
         # Initialize VRS data provider directly
         print(f"[init_vrs] Creating VRS data provider...")
@@ -1388,7 +1813,7 @@ def get_video_frame():
         if frame_index is not None:
             # Direct frame index access
             target_index = max(0, min(frame_index, _vrs_num_frames - 1))
-            print(f"[video_frame] Getting frame by index: {target_index}")
+            # print(f"[video_frame] Getting frame by index: {target_index}")
             result = _vrs_provider.get_image_data_by_index(stream_id, target_index)
         elif timestamp_s is not None and _vrs_time_range_ns[0] > 0:
             # Convert relative timestamp (0 to duration) to frame index
@@ -1399,7 +1824,7 @@ def get_video_frame():
                 relative_pos = timestamp_s / duration_s if duration_s > 0 else 0
                 target_index = int(relative_pos * (_vrs_num_frames - 1))
                 target_index = max(0, min(target_index, _vrs_num_frames - 1))
-                print(f"[video_frame] Timestamp {timestamp_s:.3f}s -> frame index {target_index} (duration: {duration_s:.3f}s, frames: {_vrs_num_frames})")
+                # print(f"[video_frame] Timestamp {timestamp_s:.3f}s -> frame index {target_index} (duration: {duration_s:.3f}s, frames: {_vrs_num_frames})")
                 result = _vrs_provider.get_image_data_by_index(stream_id, target_index)
             else:
                 result = _vrs_provider.get_image_data_by_index(stream_id, 0)
