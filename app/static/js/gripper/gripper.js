@@ -150,7 +150,9 @@ let playInterval = null;
 // VRS video frame settings
 let vrsSessionInitialized = false;
 let vrsAvailableCameras = [];
-let lastVideoFrameTimestamp = null;
+let vrsNumFrames = 0;
+let vrsTimeRangeS = [0, 0];
+let lastVideoFrameIndex = -1;
 let videoFrameUpdateInterval = 200;  // ms between frame updates
 let videoFramePending = false;
 
@@ -2505,123 +2507,182 @@ const STORAGE_KEYS = {
     URDF_FILENAME: 'gripper_urdf_filename',
     STL_FILENAMES: 'gripper_stl_filenames',
     MAPPING_SETTINGS: 'gripper_mapping_settings',
-    CONFIG_DATA: 'gripper_config_data'  // Full config for easy restore
+    CONFIG_DATA: 'gripper_config_data'
 };
 
 // DOM Elements - will be initialized in DOMContentLoaded
-let mpsFileInput;
-let urdfFileInput;
-let stlFilesInput;
-let stlFolderInput;
-let hapticFileInput;
-let mpsFolderInput;  // MPS folder input (highest priority)
-let mpsFolderFiles = null;  // Files from MPS folder
-let mpsFileInfo;
-let hapticFileInfo;
-let urdfFileInfo;
-let stlFileInfo;
-let stlFileList;
+let dirSelect;
+let groupSelect;
 let mpsFolderInfo;
+let hapticFileInfo;
+let vrsFileInfoEl;
+let urdfFileInfo;
 let loadBtn;
 let loadingIndicator;
 let visualizationSection;
 let errorSection;
 let errorMessage;
 
-// File input handler functions (to be attached in DOMContentLoaded)
-function handleMpsFileChange(e) {
-    if (e.target.files.length > 0) {
-        const file = e.target.files[0];
-        if (mpsFileInfo) {
-            mpsFileInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-            mpsFileInfo.style.color = '#28a745';
-            mpsFileInfo.style.fontStyle = 'normal';
+// Server data state
+let dataGroups = [];  // Current directory's data groups
+let selectedGroup = null;  // Currently selected data group
+const URDF_ASSETS_DIR = '/home/zhuyilong/IROS2026/Aria-tactile-Time-Alignment/SO101_URDF_Assets';
+const URDF_FILE_PATH = URDF_ASSETS_DIR + '/so101_new_calib.urdf';
+
+// Legacy file input references (kept as null for backward compat with code that checks them)
+let mpsFileInput = null;
+let urdfFileInput = null;
+let stlFilesInput = null;
+let stlFolderInput = null;
+let hapticFileInput = null;
+let mpsFolderInput = null;
+let mpsFolderFiles = null;
+let mpsFileInfo = null;
+let stlFileInfo = null;
+let stlFileList = null;
+
+// ==================== Server File Browser Functions ====================
+
+/**
+ * Load directory list from server
+ */
+async function loadDirectories() {
+    try {
+        const response = await fetch('/data/api/directories');
+        const data = await response.json();
+        if (data.success && data.subdirectories) {
+            dirSelect.innerHTML = '<option value="">-- 选择目录 --</option>';
+            data.subdirectories.forEach(dir => {
+                const opt = document.createElement('option');
+                opt.value = dir.path;
+                opt.textContent = `${dir.name} (VRS: ${dir.vrs_count}, CSV: ${dir.csv_count}, MPS: ${dir.mps_count})`;
+                dirSelect.appendChild(opt);
+            });
         }
-        saveFileInfo(); // Save to localStorage
-        checkFormValidity();
-    } else {
-        if (mpsFileInfo) {
-            mpsFileInfo.textContent = '未选择文件';
-            mpsFileInfo.style.color = '#6c757d';
-        }
-        checkFormValidity();
+    } catch (e) {
+        console.error('Failed to load directories:', e);
+        dirSelect.innerHTML = '<option value="">加载失败</option>';
     }
 }
 
-function handleUrdfFileChange(e) {
-    if (e.target.files.length > 0) {
-        const file = e.target.files[0];
-        if (urdfFileInfo) {
-            urdfFileInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
-            urdfFileInfo.style.color = '#28a745';
-            urdfFileInfo.style.fontStyle = 'normal';
+/**
+ * Load files/data groups from a selected directory
+ */
+async function loadFiles(directory) {
+    try {
+        const response = await fetch(`/data/api/files?directory=${encodeURIComponent(directory)}`);
+        const data = await response.json();
+        if (data.success && data.files) {
+            dataGroups = data.files;
+            groupSelect.disabled = false;
+            groupSelect.innerHTML = '<option value="">-- 选择数据组 --</option>';
+            dataGroups.forEach((group, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                let label = group.name;
+                const parts = [];
+                if (group.vrs_file) parts.push('VRS');
+                if (group.mps_folder) parts.push('MPS');
+                if (group.csv_files && group.csv_files.length > 0) parts.push(`${group.csv_files.length} CSV`);
+                if (parts.length > 0) label += ` (${parts.join(', ')})`;
+                opt.textContent = label;
+                groupSelect.appendChild(opt);
+            });
         }
-        saveFileInfo(); // Save to localStorage
-        checkFormValidity(); // Check if button should be enabled
-    } else {
-        if (urdfFileInfo) {
-            urdfFileInfo.textContent = '未选择文件';
-            urdfFileInfo.style.color = '#6c757d';
-        }
-        saveFileInfo(); // Save to localStorage
-        checkFormValidity(); // Check if button should be enabled
+    } catch (e) {
+        console.error('Failed to load files:', e);
+        groupSelect.innerHTML = '<option value="">加载失败</option>';
     }
 }
 
-function handleHapticFileChange(e) {
-    if (e.target.files.length > 0) {
-        const file = e.target.files[0];
-        if (hapticFileInfo) {
-            hapticFileInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+/**
+ * Handle data group selection - populate file info displays
+ */
+function onGroupSelected(groupIndex) {
+    if (groupIndex === '' || groupIndex === undefined) {
+        selectedGroup = null;
+        mpsFolderInfo.textContent = '未选择';
+        mpsFolderInfo.style.color = '#6c757d';
+        hapticFileInfo.textContent = '未选择';
+        hapticFileInfo.style.color = '#6c757d';
+        vrsFileInfoEl.textContent = '未选择';
+        vrsFileInfoEl.style.color = '#6c757d';
+        checkFormValidity();
+        return;
+    }
+
+    selectedGroup = dataGroups[parseInt(groupIndex)];
+    if (!selectedGroup) return;
+
+    // MPS folder
+    if (selectedGroup.mps_folder) {
+        const folderName = selectedGroup.mps_folder.split('/').pop();
+        mpsFolderInfo.textContent = folderName;
+        mpsFolderInfo.style.color = '#1565c0';
+    } else {
+        mpsFolderInfo.textContent = '无 MPS 文件夹';
+        mpsFolderInfo.style.color = '#e65100';
+    }
+
+    // Haptic CSV - find CSV with 'haptic', 'force', or 'tactile' in name, or any CSV that's not hand_tracking
+    if (selectedGroup.csv_files && selectedGroup.csv_files.length > 0) {
+        let hapticCsv = selectedGroup.csv_files.find(f =>
+            f.name.toLowerCase().includes('haptic') ||
+            f.name.toLowerCase().includes('force') ||
+            f.name.toLowerCase().includes('tactile'));
+        // If no specific haptic file, use the first CSV that's not hand_tracking
+        if (!hapticCsv) {
+            hapticCsv = selectedGroup.csv_files.find(f => !f.name.toLowerCase().includes('hand_tracking'));
+        }
+        if (hapticCsv) {
+            hapticFileInfo.textContent = hapticCsv.name;
             hapticFileInfo.style.color = '#28a745';
-            hapticFileInfo.style.fontStyle = 'normal';
+        } else {
+            hapticFileInfo.textContent = '未找到触觉 CSV';
+            hapticFileInfo.style.color = '#e65100';
         }
-        saveFileInfo(); // Save to localStorage
     } else {
-        if (hapticFileInfo) {
-            hapticFileInfo.textContent = '未选择';
-            hapticFileInfo.style.color = '#6c757d';
-        }
-        saveFileInfo(); // Save to localStorage
+        hapticFileInfo.textContent = '无 CSV 文件';
+        hapticFileInfo.style.color = '#6c757d';
     }
+
+    // VRS file
+    if (selectedGroup.vrs_file) {
+        const vrsName = selectedGroup.vrs_file.split('/').pop();
+        vrsFileInfoEl.textContent = vrsName;
+        vrsFileInfoEl.style.color = '#28a745';
+    } else {
+        vrsFileInfoEl.textContent = '无 VRS 文件';
+        vrsFileInfoEl.style.color = '#6c757d';
+    }
+
+    // Show offset config status in file-status-box
+    const statusBox = document.getElementById('file-status-box');
+    if (statusBox && selectedGroup.offset_config) {
+        const oc = selectedGroup.offset_config;
+        const offset = oc.current_offset ?? oc.optimal_offset;
+        statusBox.innerHTML = `<div style="color: #28a745;">已找到对齐偏移: ${offset?.toFixed(3) ?? '--'}s (相似度: ${oc.similarity?.toFixed(4) ?? '--'})</div>` +
+            `<div style="color: #6c757d;">加载数据后将自动应用偏移</div>`;
+    } else if (statusBox) {
+        statusBox.innerHTML = `<div style="color: #6c757d;">未找到对齐偏移配置，将使用自动计算</div>`;
+    }
+
+    checkFormValidity();
 }
 
-function handleStlFilesChange(e) {
-    const files = e.target.files;
-    if (files.length > 0) {
-        if (stlFileInfo) {
-            stlFileInfo.textContent = `已选择 ${files.length} 个文件`;
-            stlFileInfo.style.color = '#28a745';
-            stlFileInfo.style.fontStyle = 'normal';
-        }
-
-        // Display file list (compact grid layout)
-        if (stlFileList) {
-            let fileListHtml = '';
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                // Truncate long filenames
-                const shortName = file.name.length > 25 ? file.name.substring(0, 22) + '...' : file.name;
-                fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${file.name}">${shortName}</div>`;
-            }
-            stlFileList.innerHTML = fileListHtml;
-            stlFileList.style.display = 'grid';
-        }
-
-        saveFileInfo(); // Save to localStorage
-        checkFormValidity(); // Check if button should be enabled
-    } else {
-        if (stlFileInfo) {
-            stlFileInfo.textContent = '未选择文件（将仅显示手部关键点）';
-            stlFileInfo.style.color = '#6c757d';
-        }
-        if (stlFileList) {
-            stlFileList.innerHTML = '';
-            stlFileList.style.display = 'none';
-        }
-        saveFileInfo(); // Save to localStorage
-        checkFormValidity(); // Check if button should be enabled
+/**
+ * Get the haptic CSV path from selected group
+ */
+function getHapticPath() {
+    if (!selectedGroup || !selectedGroup.csv_files) return null;
+    let hapticCsv = selectedGroup.csv_files.find(f =>
+        f.name.toLowerCase().includes('haptic') ||
+        f.name.toLowerCase().includes('force') ||
+        f.name.toLowerCase().includes('tactile'));
+    if (!hapticCsv) {
+        hapticCsv = selectedGroup.csv_files.find(f => !f.name.toLowerCase().includes('hand_tracking'));
     }
+    return hapticCsv ? hapticCsv.path : null;
 }
 
 function formatFileSize(bytes) {
@@ -2633,450 +2694,64 @@ function formatFileSize(bytes) {
 }
 
 function checkFormValidity() {
-    // Get button element (in case it wasn't loaded when script ran)
     const button = document.getElementById('loadBtn');
-    if (!button) {
-        console.error('loadBtn not found in checkFormValidity');
-        return;
-    }
-    
-    // Get file inputs (in case they weren't loaded when script ran)
-    const mpsInput = document.getElementById('mps_file');
-    const urdfInput = document.getElementById('urdf_file');
-    const stlInput = document.getElementById('stl_files');
-    const mpsInfo = document.getElementById('mps-file-info');
-    
-    // Check if files are selected OR if config is loaded (showing file names)
-    const hasMpsFile = mpsInput && mpsInput.files && mpsInput.files.length > 0;
-    const hasUrdfFile = urdfInput && urdfInput.files && urdfInput.files.length > 0;
-    const hasStlFiles = stlInput && stlInput.files && stlInput.files.length > 0;
-    const hasConfigHint = mpsInfo && (mpsInfo.textContent.includes('配置中') || mpsInfo.textContent.includes('上次使用'));
-    
-    // Enable button if any file is selected OR config is loaded
-    const hasAnyFile = hasMpsFile || hasUrdfFile || hasStlFiles;
-    const shouldEnable = hasAnyFile || hasConfigHint;
-    
-    button.disabled = !shouldEnable;
-    
-    console.log('Form validity check:', {
-        hasMpsFile,
-        hasUrdfFile,
-        hasStlFiles,
-        hasConfigHint,
-        hasAnyFile,
-        shouldEnable,
-        buttonDisabled: button.disabled,
-        buttonElement: button
-    });
-    
-    if (!hasAnyFile && hasConfigHint) {
-        // Show hint that files need to be selected
-        console.log('Config loaded but files not selected yet');
-    }
-    
-    // Also log button's actual disabled state for debugging
-    if (button.disabled && shouldEnable) {
-        console.warn('Button should be enabled but is disabled! Forcing enable...');
-        button.disabled = false;
-    }
+    if (!button) return;
+
+    // Enable if a data group is selected (which has MPS folder or VRS/CSV data)
+    const hasGroup = selectedGroup !== null;
+    button.disabled = !hasGroup;
 }
 
-// Save file information to localStorage
 function saveFileInfo() {
-    try {
-        const config = {
-            mps_filename: null,
-            urdf_filename: null,
-            stl_filenames: [],
-            mapping_settings: mappingSettings,
-            timestamp: new Date().toISOString()
-        };
-
-        if (mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0) {
-            config.mps_filename = mpsFileInput.files[0].name;
-            localStorage.setItem(STORAGE_KEYS.MPS_FILENAME, config.mps_filename);
-        }
-
-        if (urdfFileInput && urdfFileInput.files && urdfFileInput.files.length > 0) {
-            config.urdf_filename = urdfFileInput.files[0].name;
-            localStorage.setItem(STORAGE_KEYS.URDF_FILENAME, config.urdf_filename);
-        }
-
-        if (stlFilesInput && stlFilesInput.files && stlFilesInput.files.length > 0) {
-            config.stl_filenames = Array.from(stlFilesInput.files).map(f => f.name);
-            localStorage.setItem(STORAGE_KEYS.STL_FILENAMES, JSON.stringify(config.stl_filenames));
-        }
-
-        // Save mapping settings
-        localStorage.setItem(STORAGE_KEYS.MAPPING_SETTINGS, JSON.stringify(mappingSettings));
-
-        // Save full config
-        localStorage.setItem(STORAGE_KEYS.CONFIG_DATA, JSON.stringify(config));
-
-        console.log('File info saved to localStorage');
-    } catch (e) {
-        console.error('Error saving file info:', e);
-    }
+    // No-op: server file browser mode doesn't need localStorage persistence
 }
 
-// Export current configuration to JSON file
-function exportConfig() {
-    try {
-        const config = {
-            version: '1.0',
-            mps_filename: mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0 ? mpsFileInput.files[0].name : null,
-            urdf_filename: urdfFileInput && urdfFileInput.files && urdfFileInput.files.length > 0 ? urdfFileInput.files[0].name : null,
-            stl_filenames: stlFilesInput && stlFilesInput.files && stlFilesInput.files.length > 0
-                ? Array.from(stlFilesInput.files).map(f => f.name)
-                : [],
-            mapping_settings: mappingSettings,
-            timestamp: new Date().toISOString(),
-            note: '将此文件保存，下次可以直接上传此配置文件快速加载'
-        };
-        
-        const configJson = JSON.stringify(config, null, 2);
-        const blob = new Blob([configJson], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `gripper_config_${new Date().toISOString().slice(0, 10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        showConfigStatus('配置已导出', 'success');
-    } catch (e) {
-        console.error('Error exporting config:', e);
-        showConfigStatus('导出配置失败: ' + e.message, 'error');
-    }
-}
-
-// Load configuration from JSON file
-function loadConfigFromFile(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const config = JSON.parse(e.target.result);
-                resolve(config);
-            } catch (err) {
-                reject(new Error('配置文件格式错误: ' + err.message));
-            }
-        };
-        reader.onerror = function() {
-            reject(new Error('读取配置文件失败'));
-        };
-        reader.readAsText(file);
-    });
-}
-
-// Apply configuration to form
-function applyConfig(config) {
-    try {
-        // Update mapping settings
-        if (config.mapping_settings) {
-            Object.assign(mappingSettings, config.mapping_settings);
-            
-            // Apply to UI
-            const scaleSlider = document.getElementById('scale-slider');
-            const offsetX = document.getElementById('offset-x');
-            const offsetY = document.getElementById('offset-y');
-            const offsetZ = document.getElementById('offset-z');
-            const showSkeleton = document.getElementById('show-skeleton');
-            const showGripper = document.getElementById('show-gripper');
-            
-            if (scaleSlider) {
-                scaleSlider.value = mappingSettings.scale;
-                document.getElementById('scale-value').textContent = mappingSettings.scale.toFixed(1);
-            }
-            if (offsetX) offsetX.value = mappingSettings.offsetX;
-            if (offsetY) offsetY.value = mappingSettings.offsetY;
-            if (offsetZ) offsetZ.value = mappingSettings.offsetZ;
-            if (showSkeleton) showSkeleton.checked = mappingSettings.showSkeleton;
-            if (showGripper) showGripper.checked = mappingSettings.showGripper;
-        }
-        
-        // Update file info display (we can't set file input values, but we can show what was configured)
-        if (config.mps_filename) {
-            mpsFileInfo.textContent = `配置中: ${config.mps_filename} (请重新选择此文件)`;
-            mpsFileInfo.style.color = '#ff9800';
-            mpsFileInfo.style.fontStyle = 'italic';
-        }
-        
-        if (config.urdf_filename && urdfFileInfo) {
-            urdfFileInfo.textContent = `配置中: ${config.urdf_filename} (请重新选择此文件)`;
-            urdfFileInfo.style.color = '#ff9800';
-            urdfFileInfo.style.fontStyle = 'italic';
-        }
-        
-        if (config.stl_filenames && config.stl_filenames.length > 0 && stlFileInfo) {
-            stlFileInfo.textContent = `配置中: ${config.stl_filenames.length} 个文件 (请重新选择)`;
-            stlFileInfo.style.color = '#ff9800';
-            stlFileInfo.style.fontStyle = 'italic';
-
-            // Show file list (compact grid)
-            if (stlFileList) {
-                let fileListHtml = '';
-                config.stl_filenames.forEach((name) => {
-                    const shortName = name.length > 25 ? name.substring(0, 22) + '...' : name;
-                    fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #fff3cd; border-radius: 3px; color: #856404; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${shortName}</div>`;
-                });
-                stlFileList.innerHTML = fileListHtml;
-                stlFileList.style.display = 'grid';
-            }
-        }
-        
-        // Save to localStorage
-        localStorage.setItem(STORAGE_KEYS.CONFIG_DATA, JSON.stringify(config));
-        
-        // Update form validity check (allow button to be enabled if config is loaded)
-        checkFormValidity();
-        
-        showConfigStatus('配置已加载，请重新选择文件', 'info');
-        console.log('Config applied:', config);
-    } catch (e) {
-        console.error('Error applying config:', e);
-        showConfigStatus('应用配置失败: ' + e.message, 'error');
-    }
-}
-
-// Load saved config from localStorage
-function loadSavedConfig() {
-    try {
-        const savedConfig = localStorage.getItem(STORAGE_KEYS.CONFIG_DATA);
-        if (savedConfig) {
-            const config = JSON.parse(savedConfig);
-            applyConfig(config);
-            return true;
-        }
-        return false;
-    } catch (e) {
-        console.error('Error loading saved config:', e);
-        showConfigStatus('加载保存的配置失败: ' + e.message, 'error');
-        return false;
-    }
-}
-
-// Show config status message
-function showConfigStatus(message, type = 'info') {
-    const statusDiv = document.getElementById('config-status');
-    if (!statusDiv) return;
-    
-    const colors = {
-        success: { bg: '#d4edda', border: '#28a745', text: '#155724' },
-        error: { bg: '#f8d7da', border: '#dc3545', text: '#721c24' },
-        info: { bg: '#d1ecf1', border: '#17a2b8', text: '#0c5460' }
-    };
-    
-    const color = colors[type] || colors.info;
-    statusDiv.style.cssText = `padding: 8px 12px; background: ${color.bg}; border-left: 4px solid ${color.border}; border-radius: 4px; color: ${color.text}; font-weight: 500;`;
-    statusDiv.textContent = message;
-    
-    // Auto-hide after 5 seconds
-    setTimeout(() => {
-        statusDiv.textContent = '';
-        statusDiv.style.cssText = '';
-    }, 5000);
-}
-
-// Load and display saved file information
 function loadSavedFileInfo() {
-    try {
-        const savedMps = localStorage.getItem(STORAGE_KEYS.MPS_FILENAME);
-        const savedUrdf = localStorage.getItem(STORAGE_KEYS.URDF_FILENAME);
-        const savedStl = localStorage.getItem(STORAGE_KEYS.STL_FILENAMES);
-        const savedSettings = localStorage.getItem(STORAGE_KEYS.MAPPING_SETTINGS);
-        
-        let hasSavedInfo = false;
-        
-        // Display saved MPS file info
-        if (savedMps) {
-            mpsFileInfo.textContent = `上次使用: ${savedMps}`;
-            mpsFileInfo.style.color = '#6c757d';
-            mpsFileInfo.style.fontStyle = 'italic';
-            hasSavedInfo = true;
-        }
-        
-        // Display saved URDF file info
-        if (savedUrdf && urdfFileInfo) {
-            urdfFileInfo.textContent = `上次使用: ${savedUrdf}`;
-            urdfFileInfo.style.color = '#6c757d';
-            urdfFileInfo.style.fontStyle = 'italic';
-            hasSavedInfo = true;
-        }
-        
-        // Display saved STL files info
-        if (savedStl && stlFileInfo) {
-            try {
-                const stlNames = JSON.parse(savedStl);
-                if (stlNames.length > 0) {
-                    stlFileInfo.textContent = `上次使用: ${stlNames.length} 个文件`;
-                    stlFileInfo.style.color = '#6c757d';
-                    stlFileInfo.style.fontStyle = 'italic';
-
-                    // Show file list (compact grid)
-                    if (stlFileList) {
-                        let fileListHtml = '';
-                        stlNames.forEach((name) => {
-                            const shortName = name.length > 25 ? name.substring(0, 22) + '...' : name;
-                            fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e3f2fd; border-radius: 3px; color: #1565c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${name}">${shortName}</div>`;
-                        });
-                        stlFileList.innerHTML = fileListHtml;
-                    }
-                    hasSavedInfo = true;
-                }
-            } catch (e) {
-                console.error('Error parsing saved STL files:', e);
-            }
-        }
-        
-        // Load saved mapping settings
-        if (savedSettings) {
-            try {
-                const settings = JSON.parse(savedSettings);
-                Object.assign(mappingSettings, settings);
-                
-                // Apply settings to UI
-                const scaleSlider = document.getElementById('scale-slider');
-                const offsetX = document.getElementById('offset-x');
-                const offsetY = document.getElementById('offset-y');
-                const offsetZ = document.getElementById('offset-z');
-                const showSkeleton = document.getElementById('show-skeleton');
-                const showGripper = document.getElementById('show-gripper');
-                
-                if (scaleSlider) {
-                    scaleSlider.value = mappingSettings.scale;
-                    document.getElementById('scale-value').textContent = mappingSettings.scale.toFixed(1);
-                }
-                if (offsetX) offsetX.value = mappingSettings.offsetX;
-                if (offsetY) offsetY.value = mappingSettings.offsetY;
-                if (offsetZ) offsetZ.value = mappingSettings.offsetZ;
-                if (showSkeleton) showSkeleton.checked = mappingSettings.showSkeleton;
-                if (showGripper) showGripper.checked = mappingSettings.showGripper;
-                
-                console.log('Mapping settings loaded from localStorage');
-            } catch (e) {
-                console.error('Error loading mapping settings:', e);
-            }
-        }
-        
-    } catch (e) {
-        console.error('Error loading saved file info:', e);
-    }
+    // No-op: server file browser mode doesn't need localStorage persistence
 }
 
-// Load button handler
+// Load button handler - uses server file paths via /gripper_data_from_path
 const uploadForm = document.getElementById('uploadForm');
 if (!uploadForm) {
     console.error('uploadForm not found!');
 } else {
     uploadForm.addEventListener('submit', async function(e) {
         e.preventDefault();
-        
-        console.log('Form submitted');
-        
-        // Check if files are selected
-        const hasMpsFolder = mpsFolderFiles && mpsFolderFiles.length > 0;
-        const hasMpsFile = mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0;
-        const hasUrdfFile = urdfFileInput && urdfFileInput.files && urdfFileInput.files.length > 0;
-        const hasStlFiles = stlFilesInput && stlFilesInput.files && stlFilesInput.files.length > 0;
-        const hasConfigHint = mpsFileInfo && (mpsFileInfo.textContent.includes('配置中') || mpsFileInfo.textContent.includes('上次使用'));
+        console.log('Form submitted (server path mode)');
 
-        // Allow loading with MPS folder (highest priority), or without MPS if gripper files are provided
-        if (!hasMpsFolder && !hasMpsFile && !hasConfigHint && !hasUrdfFile && !hasStlFiles) {
-            alert('请至少选择以下文件之一：\n- MPS 文件夹（SLAM + 手部追踪）\n- MPS CSV 文件（手部数据）\n- URDF/STL 文件（夹爪模型，用于测试显示）');
+        if (!selectedGroup) {
+            alert('请先选择数据目录和数据组');
             return;
         }
-        
-        if (!hasMpsFile && hasConfigHint) {
-            // Config is loaded but files not selected yet
-            const proceed = confirm('检测到已加载的配置，但文件尚未选择。\n\n点击"确定"继续（将仅显示手部关键点，不显示夹爪模型），或点击"取消"先选择文件。');
-            if (!proceed) {
-                return;
-            }
-        }
-        
+
         loadingIndicator.style.display = 'block';
         errorSection.style.display = 'none';
         loadBtn.disabled = true;
 
         try {
-            const formData = new FormData();
+            const requestBody = {
+                urdf_path: URDF_FILE_PATH,
+                stl_dir_path: URDF_ASSETS_DIR
+            };
+            if (selectedGroup.mps_folder) requestBody.mps_folder_path = selectedGroup.mps_folder;
+            const hapticPath = getHapticPath();
+            if (hapticPath) requestBody.haptic_path = hapticPath;
+            if (selectedGroup.vrs_file) requestBody.vrs_path = selectedGroup.vrs_file;
 
-            // MPS folder has highest priority - includes SLAM + hand tracking for world coordinates
-            if (hasMpsFolder) {
-                // Find the SLAM and hand tracking files
-                const slamFile = mpsFolderFiles.find(f => f.webkitRelativePath.includes('slam/closed_loop_trajectory.csv'));
-                const handFile = mpsFolderFiles.find(f => f.webkitRelativePath.includes('hand_tracking/hand_tracking_results.csv'));
-
-                // Send both files with their relative paths preserved
-                if (slamFile) {
-                    // Extract just the relative path within the MPS folder
-                    const parts = slamFile.webkitRelativePath.split('/');
-                    const mpsIdx = parts.findIndex(p => p.includes('mps') || parts.indexOf(p) === 0);
-                    const relativePath = parts.slice(mpsIdx + 1).join('/');
-                    formData.append('mps_folder_files', slamFile, relativePath || 'slam/closed_loop_trajectory.csv');
-                    console.log('SLAM file:', slamFile.webkitRelativePath);
-                }
-                if (handFile) {
-                    const parts = handFile.webkitRelativePath.split('/');
-                    const mpsIdx = parts.findIndex(p => p.includes('mps') || parts.indexOf(p) === 0);
-                    const relativePath = parts.slice(mpsIdx + 1).join('/');
-                    formData.append('mps_folder_files', handFile, relativePath || 'hand_tracking/hand_tracking_results.csv');
-                    console.log('Hand tracking file:', handFile.webkitRelativePath);
-                }
-                console.log('Using MPS folder data with world coordinates');
-            }
-            // MPS file is optional (for testing display without hand data)
-            else if (mpsFileInput && mpsFileInput.files && mpsFileInput.files.length > 0) {
-                formData.append('mps_file', mpsFileInput.files[0]);
-                console.log('MPS file:', mpsFileInput.files[0].name);
-            } else {
-                console.log('No MPS file provided - will only display gripper model for testing');
-            }
-
-            // Append haptic file if provided
-            const hapticFileInput = document.getElementById('haptic_file');
-            console.log('Haptic file input element:', hapticFileInput);
-            console.log('Haptic file input files:', hapticFileInput?.files);
-            console.log('Haptic file input files length:', hapticFileInput?.files?.length);
-            if (hapticFileInput && hapticFileInput.files && hapticFileInput.files.length > 0) {
-                formData.append('haptic_file', hapticFileInput.files[0]);
-                console.log('Haptic file added to formData:', hapticFileInput.files[0].name);
-            } else {
-                console.log('No haptic file selected');
-            }
-
-            // Append URDF file if provided
-            if (urdfFileInput && urdfFileInput.files.length > 0) {
-                formData.append('urdf_file', urdfFileInput.files[0]);
-                console.log('URDF file:', urdfFileInput.files[0].name);
-            }
-            
-            // Append all STL files
-            if (stlFilesInput && stlFilesInput.files.length > 0) {
-                for (let i = 0; i < stlFilesInput.files.length; i++) {
-                    formData.append('stl_files', stlFilesInput.files[i]);
-                    console.log('STL file:', stlFilesInput.files[i].name);
-                }
-            }
-
-            console.log('Sending request to /gripper_data...');
-            const response = await fetch('/gripper_data', {
+            console.log('Request body:', requestBody);
+            const response = await fetch('/gripper_data_from_path', {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
             });
 
-            console.log('Response status:', response.status);
-            
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
                 throw new Error(errorData.error || '加载数据失败');
             }
-            
+
             const data = await response.json();
-            console.log('Response data:', data);
+            console.log('Response data keys:', Object.keys(data));
 
             // Store hand landmarks data (optional - for testing display without hand data)
             handLandmarksData = data.hand_landmarks || null;
@@ -3143,6 +2818,15 @@ if (!uploadForm) {
                 hapticTimeOffset = null;
                 hapticTimeDebugCounter = 0;
 
+                // Auto-load alignment offset from offset_config if available
+                if (selectedGroup && selectedGroup.offset_config) {
+                    const oc = selectedGroup.offset_config;
+                    savedAlignmentOffset = oc.current_offset ?? oc.optimal_offset ?? null;
+                    console.log('Loaded alignment offset from config:', savedAlignmentOffset, 's');
+                } else {
+                    savedAlignmentOffset = null;
+                }
+
                 // Debug: log first few force values
                 if (hapticData.sensors) {
                     for (const [finger, sensorData] of Object.entries(hapticData.sensors)) {
@@ -3181,8 +2865,17 @@ if (!uploadForm) {
             // Update file status box
             updateFileStatusBox(data);
 
-            // Show video frame panel (user can load VRS later)
+            // Show video frame panel
             showVideoFramePanel();
+
+            // Auto-initialize VRS from server path if available
+            if (selectedGroup && selectedGroup.vrs_file) {
+                try {
+                    await initVRSSessionFromPath(selectedGroup.vrs_file);
+                } catch (e) {
+                    console.warn('Failed to auto-init VRS:', e);
+                }
+            }
             
             // Hand data is optional - if not provided, we'll just show gripper model
             if (handLandmarksData && handLandmarksData.right_hand && handLandmarksData.right_hand.length > 0) {
@@ -3459,45 +3152,144 @@ if (trajectoryWidthInput) {
 }
 
 // Hand pose transform controls
+const HAND_POSES_STORAGE_KEY = 'aria_hand_poses_list';
+// Legacy keys (for migration)
 const HAND_POSE_STORAGE_KEY_DEVICE = 'aria_hand_pose_transform_device';
 const HAND_POSE_STORAGE_KEY_WORLD = 'aria_hand_pose_transform_world';
 
-// Get the storage key based on current mode
+// Get the storage key based on current mode (legacy, kept for compat)
 function getHandPoseStorageKey() {
     return useWorldCoordinates ? HAND_POSE_STORAGE_KEY_WORLD : HAND_POSE_STORAGE_KEY_DEVICE;
 }
 
+/**
+ * Get all saved hand poses from localStorage
+ */
+function getAllSavedPoses() {
+    try {
+        const raw = localStorage.getItem(HAND_POSES_STORAGE_KEY);
+        if (raw) return JSON.parse(raw);
+    } catch (e) {
+        console.warn('Failed to load saved poses:', e);
+    }
+
+    // Migrate from legacy keys if no new-format data exists
+    const poses = [];
+    try {
+        const legacyDevice = localStorage.getItem(HAND_POSE_STORAGE_KEY_DEVICE);
+        if (legacyDevice) {
+            const d = JSON.parse(legacyDevice);
+            poses.push({
+                ...d,
+                id: 'legacy_device',
+                label: '旧设置 (设备坐标)',
+                groupName: '(未知)',
+                mode: 'device',
+                savedAt: d.savedAt || new Date().toISOString()
+            });
+        }
+        const legacyWorld = localStorage.getItem(HAND_POSE_STORAGE_KEY_WORLD);
+        if (legacyWorld) {
+            const d = JSON.parse(legacyWorld);
+            poses.push({
+                ...d,
+                id: 'legacy_world',
+                label: '旧设置 (世界坐标)',
+                groupName: '(未知)',
+                mode: 'world',
+                savedAt: d.savedAt || new Date().toISOString()
+            });
+        }
+    } catch (e) {}
+    return poses;
+}
+
+/**
+ * Save all poses to localStorage
+ */
+function saveAllPoses(poses) {
+    localStorage.setItem(HAND_POSES_STORAGE_KEY, JSON.stringify(poses));
+}
+
 function saveHandPoseTransform() {
-    const storageKey = getHandPoseStorageKey();
     const modeLabel = useWorldCoordinates ? '世界坐标' : '设备坐标';
-    const data = {
-        ...handPoseTransform,
+    const mode = useWorldCoordinates ? 'world' : 'device';
+    const groupName = selectedGroup ? selectedGroup.name : '(未知)';
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().slice(0, 5);
+    const id = `${groupName}_${mode}_${now.getTime()}`;
+    const label = `${groupName} [${modeLabel}] ${dateStr} ${timeStr}`;
+
+    const poseData = {
+        id,
+        label,
+        groupName,
+        mode,
+        savedAt: now.toISOString(),
+        posX: handPoseTransform.posX,
+        posY: handPoseTransform.posY,
+        posZ: handPoseTransform.posZ,
+        rotX: handPoseTransform.rotX,
+        rotY: handPoseTransform.rotY,
+        rotZ: handPoseTransform.rotZ,
+        scale: handPoseTransform.scale,
         handGripperMapping: {
             enabled: handGripperMapping.enabled,
             closeDistCm: handGripperMapping.closeDistCm,
             openDistCm: handGripperMapping.openDistCm
-        },
-        mode: useWorldCoordinates ? 'world' : 'device',
-        savedAt: new Date().toISOString()
+        }
     };
-    localStorage.setItem(storageKey, JSON.stringify(data));
-    console.log(`Hand pose saved (${modeLabel}):`, data);
-    alert(`手部姿态设置已保存（${modeLabel}模式）`);
+
+    const poses = getAllSavedPoses();
+    poses.push(poseData);
+    saveAllPoses(poses);
+
+    // Also save to legacy keys for backward compat
+    const legacyKey = getHandPoseStorageKey();
+    localStorage.setItem(legacyKey, JSON.stringify(poseData));
+
+    console.log('Hand pose saved:', poseData);
+
+    // Update the load dropdown
+    updatePoseLoadDropdown();
+
+    // Brief visual feedback
+    const saveBtn = document.getElementById('hand-pose-save-btn');
+    if (saveBtn) {
+        const orig = saveBtn.textContent;
+        saveBtn.textContent = '已存';
+        saveBtn.style.background = '#2e7d32';
+        setTimeout(() => {
+            saveBtn.textContent = orig;
+            saveBtn.style.background = '#4caf50';
+        }, 1500);
+    }
 }
 
 function loadHandPoseTransform() {
-    const storageKey = getHandPoseStorageKey();
-    const modeLabel = useWorldCoordinates ? '世界坐标' : '设备坐标';
-    const saved = localStorage.getItem(storageKey);
-    if (!saved) {
-        alert(`没有找到已保存的设置（${modeLabel}模式）`);
+    // Called when user selects from dropdown
+    const dropdown = document.getElementById('hand-pose-load-select');
+    if (!dropdown) return false;
+
+    const selectedId = dropdown.value;
+    if (!selectedId) return false;
+
+    const poses = getAllSavedPoses();
+    const pose = poses.find(p => p.id === selectedId);
+    if (!pose) {
+        console.warn('Pose not found:', selectedId);
         return false;
     }
 
-    try {
-        const data = JSON.parse(saved);
+    return applyPoseData(pose);
+}
 
-        // Load hand pose transform
+/**
+ * Apply a pose data object to the current hand pose transform
+ */
+function applyPoseData(data) {
+    try {
         handPoseTransform.posX = data.posX ?? 0;
         handPoseTransform.posY = data.posY ?? 0;
         handPoseTransform.posZ = data.posZ ?? 0;
@@ -3506,80 +3298,123 @@ function loadHandPoseTransform() {
         handPoseTransform.rotZ = data.rotZ ?? 0;
         handPoseTransform.scale = data.scale ?? 1;
 
-        // Load hand-gripper mapping if available
         if (data.handGripperMapping) {
             handGripperMapping.enabled = data.handGripperMapping.enabled ?? true;
             handGripperMapping.closeDistCm = data.handGripperMapping.closeDistCm ?? 2;
             handGripperMapping.openDistCm = data.handGripperMapping.openDistCm ?? 10;
         }
 
-        // Update UI
         updateHandPoseUI();
         updateHandGripperMappingUI();
 
-        const savedTime = data.savedAt ? new Date(data.savedAt).toLocaleString() : '未知';
-        console.log(`Hand pose loaded (${modeLabel}):`, data);
-        alert(`手部姿态设置已加载（${modeLabel}模式）\n保存时间: ${savedTime}`);
+        console.log('Applied pose:', data.label || data.id);
         return true;
     } catch (e) {
-        console.error('Failed to load hand pose:', e);
-        alert('加载设置失败: ' + e.message);
+        console.error('Failed to apply pose:', e);
         return false;
     }
 }
 
-// Auto-load saved settings for both modes (called on data load)
+/**
+ * Delete a saved pose by ID
+ */
+function deleteSavedPose(poseId) {
+    let poses = getAllSavedPoses();
+    poses = poses.filter(p => p.id !== poseId);
+    saveAllPoses(poses);
+    updatePoseLoadDropdown();
+}
+
+/**
+ * Update the load dropdown with all saved poses
+ */
+function updatePoseLoadDropdown() {
+    const dropdown = document.getElementById('hand-pose-load-select');
+    if (!dropdown) return;
+
+    const poses = getAllSavedPoses();
+    const mode = useWorldCoordinates ? 'world' : 'device';
+    const groupName = selectedGroup ? selectedGroup.name : null;
+
+    dropdown.innerHTML = '<option value="">-- 选择已保存的姿态 --</option>';
+
+    // Sort: matching group+mode first, then same mode, then rest; newest first within each group
+    const sorted = [...poses].sort((a, b) => {
+        const aMatch = (a.groupName === groupName ? 2 : 0) + (a.mode === mode ? 1 : 0);
+        const bMatch = (b.groupName === groupName ? 2 : 0) + (b.mode === mode ? 1 : 0);
+        if (aMatch !== bMatch) return bMatch - aMatch;
+        return new Date(b.savedAt) - new Date(a.savedAt);
+    });
+
+    sorted.forEach(pose => {
+        const opt = document.createElement('option');
+        opt.value = pose.id;
+        // Highlight matching entries
+        let prefix = '';
+        if (pose.groupName === groupName && pose.mode === mode) prefix = '★ ';
+        else if (pose.mode === mode) prefix = '● ';
+        opt.textContent = prefix + pose.label;
+        dropdown.appendChild(opt);
+    });
+}
+
+// Auto-load the best matching saved pose for each mode (called on data load)
 function autoLoadHandPoseSettings() {
-    // Load device coordinates settings
-    const savedDevice = localStorage.getItem(HAND_POSE_STORAGE_KEY_DEVICE);
-    if (savedDevice) {
-        try {
-            const data = JSON.parse(savedDevice);
-            handPoseTransformDevice.posX = data.posX ?? 0;
-            handPoseTransformDevice.posY = data.posY ?? 0;
-            handPoseTransformDevice.posZ = data.posZ ?? 0;
-            handPoseTransformDevice.rotX = data.rotX ?? 0;
-            handPoseTransformDevice.rotY = data.rotY ?? 0;
-            handPoseTransformDevice.rotZ = data.rotZ ?? 0;
-            handPoseTransformDevice.scale = data.scale ?? 1;
-            console.log('Auto-loaded device coordinates hand pose settings');
-        } catch (e) {
-            console.warn('Failed to auto-load device hand pose settings:', e);
+    const poses = getAllSavedPoses();
+    const groupName = selectedGroup ? selectedGroup.name : null;
+
+    // Helper: find best pose for a given mode
+    function findBest(targetMode) {
+        // Priority: 1) same group + same mode (newest), 2) same mode (newest), 3) legacy
+        const matching = poses.filter(p => p.mode === targetMode);
+        const groupMatch = matching.filter(p => p.groupName === groupName);
+        if (groupMatch.length > 0) {
+            groupMatch.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+            return groupMatch[0];
         }
+        if (matching.length > 0) {
+            matching.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+            return matching[0];
+        }
+        return null;
     }
 
-    // Load world coordinates settings
-    const savedWorld = localStorage.getItem(HAND_POSE_STORAGE_KEY_WORLD);
-    if (savedWorld) {
-        try {
-            const data = JSON.parse(savedWorld);
-            handPoseTransformWorld.posX = data.posX ?? 0;
-            handPoseTransformWorld.posY = data.posY ?? 0;
-            handPoseTransformWorld.posZ = data.posZ ?? 0;
-            handPoseTransformWorld.rotX = data.rotX ?? 0;
-            handPoseTransformWorld.rotY = data.rotY ?? 0;
-            handPoseTransformWorld.rotZ = data.rotZ ?? 0;
-            handPoseTransformWorld.scale = data.scale ?? 1;
-            console.log('Auto-loaded world coordinates hand pose settings');
-        } catch (e) {
-            console.warn('Failed to auto-load world hand pose settings:', e);
-        }
+    // Load device pose
+    const devicePose = findBest('device');
+    if (devicePose) {
+        handPoseTransformDevice.posX = devicePose.posX ?? 0;
+        handPoseTransformDevice.posY = devicePose.posY ?? 0;
+        handPoseTransformDevice.posZ = devicePose.posZ ?? 0;
+        handPoseTransformDevice.rotX = devicePose.rotX ?? 0;
+        handPoseTransformDevice.rotY = devicePose.rotY ?? 0;
+        handPoseTransformDevice.rotZ = devicePose.rotZ ?? 0;
+        handPoseTransformDevice.scale = devicePose.scale ?? 1;
+        console.log('Auto-loaded device pose:', devicePose.label);
     }
 
-    // Load hand-gripper mapping from either (they share the same settings)
-    const savedAny = savedDevice || savedWorld;
-    if (savedAny) {
-        try {
-            const data = JSON.parse(savedAny);
-            if (data.handGripperMapping) {
-                handGripperMapping.enabled = data.handGripperMapping.enabled ?? true;
-                handGripperMapping.closeDistCm = data.handGripperMapping.closeDistCm ?? 2;
-                handGripperMapping.openDistCm = data.handGripperMapping.openDistCm ?? 10;
-            }
-        } catch (e) {
-            // Ignore
-        }
+    // Load world pose
+    const worldPose = findBest('world');
+    if (worldPose) {
+        handPoseTransformWorld.posX = worldPose.posX ?? 0;
+        handPoseTransformWorld.posY = worldPose.posY ?? 0;
+        handPoseTransformWorld.posZ = worldPose.posZ ?? 0;
+        handPoseTransformWorld.rotX = worldPose.rotX ?? 0;
+        handPoseTransformWorld.rotY = worldPose.rotY ?? 0;
+        handPoseTransformWorld.rotZ = worldPose.rotZ ?? 0;
+        handPoseTransformWorld.scale = worldPose.scale ?? 1;
+        console.log('Auto-loaded world pose:', worldPose.label);
     }
+
+    // Load hand-gripper mapping from whichever was found
+    const bestPose = devicePose || worldPose;
+    if (bestPose && bestPose.handGripperMapping) {
+        handGripperMapping.enabled = bestPose.handGripperMapping.enabled ?? true;
+        handGripperMapping.closeDistCm = bestPose.handGripperMapping.closeDistCm ?? 2;
+        handGripperMapping.openDistCm = bestPose.handGripperMapping.openDistCm ?? 10;
+    }
+
+    // Update the load dropdown
+    updatePoseLoadDropdown();
 }
 
 function updateHandPoseUI() {
@@ -3628,6 +3463,8 @@ function initHandPoseControls() {
     const saveBtn = document.getElementById('hand-pose-save-btn');
     const loadBtn = document.getElementById('hand-pose-load-btn');
     const resetBtn = document.getElementById('hand-pose-reset-btn');
+    const deleteBtn = document.getElementById('hand-pose-delete-btn');
+    const loadSelect = document.getElementById('hand-pose-load-select');
 
     // Position handlers
     if (posXInput) {
@@ -3681,6 +3518,18 @@ function initHandPoseControls() {
     // Load handler
     if (loadBtn) {
         loadBtn.addEventListener('click', loadHandPoseTransform);
+    }
+
+    // Delete handler
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', function() {
+            if (!loadSelect || !loadSelect.value) return;
+            const selectedId = loadSelect.value;
+            const selectedText = loadSelect.options[loadSelect.selectedIndex].textContent;
+            if (confirm(`删除姿态设置?\n${selectedText}`)) {
+                deleteSavedPose(selectedId);
+            }
+        });
     }
 
     // Reset handler
@@ -4144,249 +3993,52 @@ document.addEventListener('keydown', function(e) {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('DOM loaded, initializing gripper visualization...');
+    console.log('DOM loaded, initializing gripper visualization (server browser mode)...');
 
-    // Initialize DOM elements
-    mpsFileInput = document.getElementById('mps_file');
-    hapticFileInput = document.getElementById('haptic_file');
-    urdfFileInput = document.getElementById('urdf_file');
-    stlFilesInput = document.getElementById('stl_files');
-    stlFolderInput = document.getElementById('stl_folder');
-    mpsFolderInput = document.getElementById('mps_folder');
-    mpsFileInfo = document.getElementById('mps-file-info');
-    hapticFileInfo = document.getElementById('haptic-file-info');
-    urdfFileInfo = document.getElementById('urdf-file-info');
-    stlFileInfo = document.getElementById('stl-file-info');
-    stlFileList = document.getElementById('stl-file-list');
+    // Initialize DOM elements for server file browser
+    dirSelect = document.getElementById('dir-select');
+    groupSelect = document.getElementById('group-select');
     mpsFolderInfo = document.getElementById('mps-folder-info');
+    hapticFileInfo = document.getElementById('haptic-file-info');
+    vrsFileInfoEl = document.getElementById('vrs-file-info');
+    urdfFileInfo = document.getElementById('urdf-file-info');
     loadBtn = document.getElementById('loadBtn');
     loadingIndicator = document.getElementById('loadingIndicator');
     visualizationSection = document.getElementById('visualizationSection');
     errorSection = document.getElementById('errorSection');
     errorMessage = document.getElementById('errorMessage');
 
-    // Check if all required elements exist
-    if (!mpsFileInput) console.error('mpsFileInput not found');
-    if (!urdfFileInput) console.error('urdfFileInput not found');
-    if (!stlFilesInput) console.error('stlFilesInput not found');
-    if (!stlFolderInput) console.error('stlFolderInput not found');
     if (!loadBtn) {
         console.error('loadBtn not found');
         return;
     }
 
-    // Attach event listeners
-    if (mpsFileInput) {
-        mpsFileInput.addEventListener('change', handleMpsFileChange);
-        console.log('MPS file input listener attached');
-    }
-
-    if (hapticFileInput) {
-        hapticFileInput.addEventListener('change', handleHapticFileChange);
-        console.log('Haptic file input listener attached');
-    }
-
-    if (urdfFileInput) {
-        urdfFileInput.addEventListener('change', handleUrdfFileChange);
-        console.log('URDF file input listener attached');
-    }
-
-    if (stlFilesInput) {
-        stlFilesInput.addEventListener('change', handleStlFilesChange);
-        console.log('STL files input listener attached');
-    }
-
-    // Handle STL folder input (webkitdirectory)
-    if (stlFolderInput) {
-        stlFolderInput.addEventListener('change', function(e) {
-            // Filter only .stl files from folder
-            const allFiles = Array.from(e.target.files);
-            const stlFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.stl'));
-
-            if (stlFiles.length > 0) {
-                // Copy STL files to stlFilesInput by creating a DataTransfer
-                const dt = new DataTransfer();
-                stlFiles.forEach(f => dt.items.add(f));
-                stlFilesInput.files = dt.files;
-
-                // Update UI
-                if (stlFileInfo) {
-                    stlFileInfo.textContent = `已选择 ${stlFiles.length} 个 STL 文件`;
-                    stlFileInfo.style.color = '#28a745';
-                }
-                if (stlFileList) {
-                    let fileListHtml = '';
-                    stlFiles.forEach((f) => {
-                        const shortName = f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name;
-                        fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.name}">${shortName}</div>`;
-                    });
-                    stlFileList.innerHTML = fileListHtml;
-                }
-                console.log(`✅ 从文件夹中加载了 ${stlFiles.length} 个 STL 文件`);
-                saveFileInfo();
-                checkFormValidity();
-            }
-        });
-        console.log('STL folder input listener attached');
-    }
-
-    // Handle MPS folder input - load SLAM + hand tracking data
-    if (mpsFolderInput) {
-        mpsFolderInput.addEventListener('change', function(e) {
-            const allFiles = Array.from(e.target.files);
-            console.log(`MPS folder: found ${allFiles.length} files total`);
-
-            // Check for expected MPS folder structure
-            const slamFile = allFiles.find(f => f.webkitRelativePath.includes('slam/closed_loop_trajectory.csv'));
-            const handFile = allFiles.find(f => f.webkitRelativePath.includes('hand_tracking/hand_tracking_results.csv'));
-
-            if (slamFile || handFile) {
-                mpsFolderFiles = allFiles;
-                if (mpsFolderInfo) {
-                    const info = [];
-                    if (slamFile) info.push('SLAM');
-                    if (handFile) info.push('手部追踪');
-                    mpsFolderInfo.textContent = `已加载: ${info.join(' + ')}（世界坐标系）`;
-                    mpsFolderInfo.style.color = '#1565c0';
-                }
-                console.log(`✅ MPS 文件夹: SLAM=${!!slamFile}, Hand=${!!handFile}`);
-                checkFormValidity();
+    // Directory select handler
+    if (dirSelect) {
+        dirSelect.addEventListener('change', function(e) {
+            const dir = e.target.value;
+            if (dir) {
+                loadFiles(dir);
             } else {
-                mpsFolderFiles = null;
-                if (mpsFolderInfo) {
-                    mpsFolderInfo.textContent = '未找到 slam/ 或 hand_tracking/ 目录';
-                    mpsFolderInfo.style.color = '#d32f2f';
-                }
-                console.warn('MPS 文件夹结构不正确');
+                groupSelect.innerHTML = '<option value="">请先选择目录</option>';
+                groupSelect.disabled = true;
+                selectedGroup = null;
+                checkFormValidity();
             }
         });
-        console.log('MPS folder input listener attached');
     }
 
-    // Handle auto folder input - automatically detect CSV, URDF, STL files
-    const autoFolderInput = document.getElementById('auto_folder');
-    if (autoFolderInput) {
-        autoFolderInput.addEventListener('change', function(e) {
-            const allFiles = Array.from(e.target.files);
-            console.log(`Auto folder: found ${allFiles.length} files total`);
-
-            // Categorize files
-            const csvFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.csv'));
-            const urdfFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.urdf') || f.name.toLowerCase().endsWith('.xml'));
-            const stlFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.stl'));
-
-            console.log(`Auto folder: ${csvFiles.length} CSV, ${urdfFiles.length} URDF, ${stlFiles.length} STL`);
-
-            // Set MPS CSV file (prefer files with 'mps' or 'hand' in name)
-            if (csvFiles.length > 0 && mpsFileInput) {
-                let mpsFile = csvFiles.find(f => f.name.toLowerCase().includes('mps') || f.name.toLowerCase().includes('hand'));
-                if (!mpsFile) mpsFile = csvFiles[0];
-
-                const dt = new DataTransfer();
-                dt.items.add(mpsFile);
-                mpsFileInput.files = dt.files;
-
-                if (mpsFileInfo) {
-                    mpsFileInfo.textContent = mpsFile.name;
-                    mpsFileInfo.style.color = '#28a745';
-                    mpsFileInfo.style.fontStyle = 'normal';
-                }
-                console.log(`✅ 自动选择 MPS 文件: ${mpsFile.name}`);
-            }
-
-            // Set Haptic CSV file (prefer files with 'haptic', 'force', or 'tactile' in name)
-            if (csvFiles.length > 0 && hapticFileInput) {
-                let hapticFile = csvFiles.find(f =>
-                    f.name.toLowerCase().includes('haptic') ||
-                    f.name.toLowerCase().includes('force') ||
-                    f.name.toLowerCase().includes('tactile'));
-
-                if (hapticFile) {
-                    const dt = new DataTransfer();
-                    dt.items.add(hapticFile);
-                    hapticFileInput.files = dt.files;
-
-                    if (hapticFileInfo) {
-                        hapticFileInfo.textContent = hapticFile.name;
-                        hapticFileInfo.style.color = '#28a745';
-                        hapticFileInfo.style.fontStyle = 'normal';
-                    }
-                    console.log(`✅ 自动选择 Haptic 文件: ${hapticFile.name}`);
-                }
-            }
-
-            // Set URDF file (prefer files with 'urdf' in name)
-            if (urdfFiles.length > 0 && urdfFileInput) {
-                let urdfFile = urdfFiles.find(f => f.name.toLowerCase().endsWith('.urdf'));
-                if (!urdfFile) urdfFile = urdfFiles[0];
-
-                const dt = new DataTransfer();
-                dt.items.add(urdfFile);
-                urdfFileInput.files = dt.files;
-
-                if (urdfFileInfo) {
-                    urdfFileInfo.textContent = urdfFile.name;
-                    urdfFileInfo.style.color = '#28a745';
-                    urdfFileInfo.style.fontStyle = 'normal';
-                }
-                console.log(`✅ 自动选择 URDF 文件: ${urdfFile.name}`);
-            }
-
-            // Set STL files
-            if (stlFiles.length > 0 && stlFilesInput) {
-                const dt = new DataTransfer();
-                stlFiles.forEach(f => dt.items.add(f));
-                stlFilesInput.files = dt.files;
-
-                if (stlFileInfo) {
-                    stlFileInfo.textContent = `已选择 ${stlFiles.length} 个 STL 文件`;
-                    stlFileInfo.style.color = '#28a745';
-                    stlFileInfo.style.fontStyle = 'normal';
-                }
-                if (stlFileList) {
-                    let fileListHtml = '';
-                    stlFiles.forEach((f) => {
-                        const shortName = f.name.length > 25 ? f.name.substring(0, 22) + '...' : f.name;
-                        fileListHtml += `<div style="font-size: 0.8rem; padding: 2px 4px; background: #e9ecef; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.name}">${shortName}</div>`;
-                    });
-                    stlFileList.innerHTML = fileListHtml;
-                }
-                console.log(`✅ 自动选择 ${stlFiles.length} 个 STL 文件`);
-            }
-
-            saveFileInfo();
-            checkFormValidity();
-
-            // Show summary
-            const summary = [];
-            if (csvFiles.length > 0) summary.push(`${csvFiles.length} CSV`);
-            if (urdfFiles.length > 0) summary.push(`${urdfFiles.length} URDF`);
-            if (stlFiles.length > 0) summary.push(`${stlFiles.length} STL`);
-            if (summary.length > 0) {
-                console.log(`✅ 自动加载完成: ${summary.join(', ')}`);
-            }
+    // Data group select handler
+    if (groupSelect) {
+        groupSelect.addEventListener('change', function(e) {
+            onGroupSelected(e.target.value);
         });
-        console.log('Auto folder input listener attached');
     }
 
-    // Note: We don't initialize scenes on page load because visualizationSection is hidden
-    // Scenes will be initialized when data is loaded and visualizationSection is shown
+    // Load directories on page load
+    loadDirectories();
+
     console.log('Page loaded, waiting for data to initialize scenes...');
-
-    // Load saved file information
-    loadSavedFileInfo();
-
-    // Force check form validity after a short delay to ensure all elements are ready
-    setTimeout(() => {
-        checkFormValidity();
-        console.log('Initial form validity check completed');
-        console.log('Button state:', {
-            disabled: loadBtn.disabled,
-            hasMps: mpsFileInput && mpsFileInput.files.length > 0,
-            hasUrdf: urdfFileInput && urdfFileInput.files.length > 0,
-            hasStl: stlFilesInput && stlFilesInput.files.length > 0
-        });
-    }, 100);
 
     // Initialize hand view mode toggle
     const handViewModeRadios = document.querySelectorAll('input[name="hand-view-mode"]');
@@ -4394,10 +4046,8 @@ document.addEventListener('DOMContentLoaded', function() {
         radio.addEventListener('change', function(e) {
             const mode = e.target.value;
             setHandViewMode(mode);
-            console.log('Hand view mode changed to:', mode);
         });
     });
-    console.log('Hand view mode toggle initialized');
 
     // Initialize haptic controls
     initHapticControls();
@@ -5124,30 +4774,35 @@ document.addEventListener('DOMContentLoaded', function() {
  * 从当前加载的 MPS 数据拟合 MANO shape 参数
  */
 async function fitManoShape() {
-    // 检查是否有 MPS 文件
-    const mpsFileInput = document.getElementById('mps_file');
-    if (!mpsFileInput || !mpsFileInput.files || mpsFileInput.files.length === 0) {
-        alert('请先选择 MPS CSV 文件');
-        return;
+    // Check if MPS data is loaded (from server path)
+    if (!selectedGroup || !selectedGroup.mps_folder) {
+        // Check if hand_tracking file exists in the group
+        const htFile = selectedGroup && selectedGroup.hand_tracking_file;
+        if (!htFile && !handLandmarksData) {
+            alert('请先选择包含 MPS 文件夹的数据组');
+            return;
+        }
     }
 
-    const mpsFile = mpsFileInput.files[0];
     const fitBtn = document.getElementById('fit-mano-btn');
 
-    // 显示进度
     const originalText = fitBtn.textContent;
     fitBtn.textContent = '拟合中...';
     fitBtn.disabled = true;
     fitBtn.style.background = '#ccc';
 
     try {
-        // 创建 FormData
+        // Send MPS folder path to server
         const formData = new FormData();
-        formData.append('mps_file', mpsFile);
+        if (selectedGroup && selectedGroup.mps_folder) {
+            const htPath = selectedGroup.mps_folder + '/hand_tracking/hand_tracking_results.csv';
+            formData.append('mps_server_path', htPath);
+        } else if (selectedGroup && selectedGroup.hand_tracking_file) {
+            formData.append('mps_server_path', selectedGroup.hand_tracking_file);
+        }
         formData.append('hand', 'right');
         formData.append('iterations', '500');
 
-        // 发送请求
         const response = await fetch('/gripper/fit_mano_shape', {
             method: 'POST',
             body: formData
@@ -5553,6 +5208,7 @@ function getForceColor(normalizedForce) {
  */
 let hapticTimeDebugCounter = 0;
 let hapticTimeOffset = null; // Auto-calculated offset to align hand and haptic timestamps
+let savedAlignmentOffset = null; // Alignment offset loaded from offset_config (from alignment page)
 
 function getHapticValueAtTime(currentTime) {
     if (!hapticData || !hapticData.timestamps || hapticData.timestamps.length === 0) {
@@ -5566,6 +5222,16 @@ function getHapticValueAtTime(currentTime) {
         hapticTimeOffset = handStart - hapticStart;
         console.log('Auto-calculated haptic time offset:', hapticTimeOffset,
             '(hand starts at', handStart, ', haptic starts at', hapticStart, ')');
+
+        // If alignment offset is available, compute residual correction
+        if (savedAlignmentOffset !== null) {
+            const residual = savedAlignmentOffset - hapticTimeOffset;
+            hapticSettings.timeOffset = residual;
+            const inputEl = document.getElementById('haptic-time-offset');
+            if (inputEl) inputEl.value = residual.toFixed(2);
+            console.log('Applied alignment offset:', savedAlignmentOffset,
+                '-> residual timeOffset:', residual.toFixed(3), 's');
+        }
     }
 
     // Convert hand time to haptic time coordinate
@@ -5837,35 +5503,69 @@ window.getHapticValueAtTime = getHapticValueAtTime;
 // ==================== VRS Video Frame Functions ====================
 
 /**
- * Initialize VRS file input listener
+ * Initialize VRS file input listener (no longer uses file input, kept for compatibility)
  */
 function initVRSFileInput() {
-    const vrsFileInput = document.getElementById('vrs_file');
-    const vrsFileInfo = document.getElementById('vrs-file-info');
+    // No-op: VRS is now auto-loaded from server path via data group selection
+}
+
+/**
+ * Initialize VRS session from server path (no upload needed)
+ */
+async function initVRSSessionFromPath(vrsPath) {
+    const loadingEl = document.getElementById('video-frame-loading');
+    const errorEl = document.getElementById('video-frame-error');
+    const imgEl = document.getElementById('video-frame-img');
+    const vrsPanelInfo = document.getElementById('vrs-panel-info');
     const videoFramePanel = document.getElementById('video-frame-panel');
 
-    if (vrsFileInput) {
-        vrsFileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+    try {
+        if (errorEl) errorEl.style.display = 'none';
+        if (imgEl) imgEl.style.display = 'none';
+        if (loadingEl) loadingEl.style.display = 'block';
 
-            if (vrsFileInfo) {
-                vrsFileInfo.textContent = file.name;
-            }
+        console.log('Initializing VRS from server path:', vrsPath);
 
-            // Show panel
-            if (videoFramePanel) {
-                videoFramePanel.style.display = 'flex';
-            }
+        const formData = new FormData();
+        formData.append('vrs_server_path', vrsPath);
 
-            // Upload and initialize VRS session
-            await initVRSSession(file);
+        const response = await fetch('/gripper/init_vrs', {
+            method: 'POST',
+            body: formData
         });
+
+        const result = await response.json();
+        console.log('VRS init response:', result);
+
+        if (response.ok && result.success) {
+            vrsSessionInitialized = true;
+            vrsAvailableCameras = result.cameras || [];
+            vrsNumFrames = result.num_frames || 0;
+            vrsTimeRangeS = result.time_range_s || [0, 0];
+
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            if (vrsPanelInfo) vrsPanelInfo.textContent = `VRS: ${vrsPath.split('/').pop()}`;
+            if (videoFramePanel) videoFramePanel.style.display = 'flex';
+
+            lastVideoFrameIndex = -1;
+            await updateVideoFrame(0);
+        } else {
+            throw new Error(result.error || 'Failed to initialize VRS session');
+        }
+    } catch (error) {
+        console.error('VRS initialization error:', error);
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (errorEl) {
+            errorEl.textContent = error.message || '初始化失败';
+            errorEl.style.display = 'block';
+        }
+        vrsSessionInitialized = false;
     }
 }
 
 /**
- * Upload VRS file and initialize session
+ * Upload VRS file and initialize session (legacy, kept for compatibility)
  */
 async function initVRSSession(vrsFile) {
     const loadingEl = document.getElementById('video-frame-loading');
@@ -5920,32 +5620,34 @@ async function initVRSSession(vrsFile) {
 }
 
 /**
- * Fetch and display video frame for current timestamp
- * @param {number} [forceTimestamp] - Optional timestamp to fetch, bypasses normal timestamp check
+ * Fetch and display video frame for current hand/haptic frame index.
+ * Maps the current data frame index proportionally to VRS frame index.
+ * @param {number|null} [forceFrameIndex] - Optional VRS frame index to fetch directly
  */
-async function updateVideoFrame(forceTimestamp = null) {
+async function updateVideoFrame(forceFrameIndex = null) {
     if (!vrsSessionInitialized || videoFramePending) return;
 
-    // Get current timestamp
-    let currentTime;
-    if (forceTimestamp !== null) {
-        currentTime = forceTimestamp;
+    // Calculate VRS frame index
+    let vrsFrameIndex;
+    if (forceFrameIndex !== null) {
+        vrsFrameIndex = forceFrameIndex;
     } else {
-        const timestamps = handTimestamps.length > 0 ? handTimestamps : hapticTimestamps;
-        if (timestamps.length === 0) {
-            // No hand/haptic data loaded - use a default timestamp (start of video)
-            currentTime = 0;
+        const totalDataFrames = handTimestamps.length > 0 ? handTimestamps.length : hapticTimestamps.length;
+        if (totalDataFrames === 0 || vrsNumFrames === 0) {
+            vrsFrameIndex = 0;
         } else {
-            const frameIndex = Math.floor(currentFrameIndex) % timestamps.length;
-            currentTime = timestamps[frameIndex];
+            // Map current data frame to VRS frame proportionally
+            const dataFrameIdx = Math.floor(currentFrameIndex) % totalDataFrames;
+            const ratio = dataFrameIdx / (totalDataFrames - 1);
+            vrsFrameIndex = Math.round(ratio * (vrsNumFrames - 1));
         }
     }
 
-    // Skip if timestamp hasn't changed enough
-    if (lastVideoFrameTimestamp !== null &&
-        Math.abs(currentTime - lastVideoFrameTimestamp) < 0.05) {
-        return;
-    }
+    // Clamp to valid range
+    vrsFrameIndex = Math.max(0, Math.min(vrsFrameIndex, vrsNumFrames - 1));
+
+    // Skip if same frame
+    if (vrsFrameIndex === lastVideoFrameIndex) return;
 
     videoFramePending = true;
     const loadingEl = document.getElementById('video-frame-loading');
@@ -5959,10 +5661,8 @@ async function updateVideoFrame(forceTimestamp = null) {
         const camera = vrsAvailableCameras.find(c => c.includes('rgb')) ||
                        vrsAvailableCameras[0] || 'camera-rgb';
 
-        console.log(`[updateVideoFrame] Fetching frame at timestamp=${currentTime}s, camera=${camera}`);
-        const response = await fetch(`/gripper/video_frame?timestamp=${currentTime}&camera=${camera}`);
+        const response = await fetch(`/gripper/video_frame?frame_index=${vrsFrameIndex}&camera=${camera}`);
         const result = await response.json();
-        console.log(`[updateVideoFrame] Response:`, response.ok, result.image ? 'has image' : result.error);
 
         if (response.ok && result.image) {
             if (imgEl) {
@@ -5971,7 +5671,7 @@ async function updateVideoFrame(forceTimestamp = null) {
             }
             if (errorEl) errorEl.style.display = 'none';
             if (timeEl) timeEl.textContent = `${result.timestamp_s.toFixed(2)}s`;
-            lastVideoFrameTimestamp = currentTime;
+            lastVideoFrameIndex = vrsFrameIndex;
         } else {
             throw new Error(result.error || 'Failed to get frame');
         }

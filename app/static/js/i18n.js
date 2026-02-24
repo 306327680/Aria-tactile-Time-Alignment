@@ -7,6 +7,28 @@ const translations = {
         'app.title': 'Aria-Haptic 时间对齐工具',
         'app.subtitle': '对齐 Project Aria 手部追踪数据与触觉传感器数据',
         'nav.visualize': '数据可视化',
+        'nav.player': '数据播放器',
+        'nav.data_manager': '数据管理',
+        'nav.gripper': '夹爪可视化',
+        'nav.alignment': '对齐工具',
+
+        // Workflow Guide
+        'workflow.title': '使用流程',
+        'workflow.step1.title': '选择数据文件',
+        'workflow.step1.desc': '在「选择数据文件」中选择数据目录，系统自动识别 MPS CSV、触觉 CSV 和 VRS 文件',
+        'workflow.step2.title': '运行对齐',
+        'workflow.step2.desc': '确认参数后点击「开始对齐分析」，系统计算 Aria 手部追踪与触觉数据的最优时间偏移',
+        'workflow.step3.title': '微调偏移 & 检查视频',
+        'workflow.step3.desc': '拖动偏移滑条微调对齐；播放 RGB 视频确认对齐效果；满意后点击「保存偏移配置」',
+        'workflow.step4.title': '编辑力度片段',
+        'workflow.step4.desc': '在图表中拖动片段边界调整起止时间；「+ 添加片段」手动新增；右键删除不需要的片段；完成后点「💾 保存片段」',
+        'workflow.step5.title': '导出到 LeRobot',
+        'workflow.step5.desc': '在「导出到 LeRobot」面板设置输出目录和任务名，点击「运行转换」生成训练数据集',
+        'workflow.tip': '下次打开时，系统会自动检测已保存的对齐配置和片段，可直接加载无需重新计算',
+
+        // Theme
+        'theme.dark': '切换到夜间模式',
+        'theme.light': '切换到日间模式',
 
         // Warning Banner
         'warning.aria_api.title': 'aria_api 未安装',
@@ -42,6 +64,8 @@ const translations = {
         'params.smooth_window.help': '降噪平滑滤波器窗口',
         'params.export_segments': '检测并导出片段',
         'params.export_segments.help': '自动识别力度片段并生成 CSV',
+        'params.view_window': '显示窗口 (秒)：',
+        'params.view_window.help': '图表默认可见范围，用底部滑条导航全部数据',
 
         // Action Button
         'action.align': '开始对齐分析',
@@ -90,6 +114,59 @@ const translations = {
         'viz.offset': '时间偏移 (s)',
         'viz.value': '归一化值',
 
+        // Segments Panel
+        'segments.title': '力度片段',
+        'segments.add': '+ 添加片段',
+        'segments.save': '💾 保存片段',
+        'segments.save_no_haptic': '需要先加载触觉数据才能保存片段',
+        'segments.save_empty': '没有片段可保存',
+        'segments.select_all': '全选',
+        'segments.deselect_all': '取消全选',
+        'segments.empty': '暂无片段，点击"+ 添加片段"创建',
+        'segments.drag_hint': '在图表中拖动片段边界来调整起止时间，取消勾选可排除出 CSV 导出',
+
+        // Episode Preview
+        'episodes.title': 'LeRobot 分集预览',
+        'episodes.count': '{count} 个分集',
+        'episodes.episode': '分集',
+        'episodes.time_range': '时间范围',
+        'episodes.duration': '时长',
+        'episodes.frames': '估计帧数',
+        'episodes.source': '来源片段',
+        'episodes.total': '总计',
+        'episodes.total_duration': '总时长',
+        'episodes.total_frames': '总帧数',
+        'episodes.no_segments': '没有启用的片段，请在上方片段列表中勾选至少一个片段',
+
+        // Export
+        'export.title': 'LeRobot 导出',
+        'export.output_dir': '输出目录：',
+        'export.output_dir_placeholder': 'LeRobot 数据集输出路径',
+        'export.cli_label': 'CLI 命令：',
+        'export.save_segments': '保存片段 CSV',
+        'export.copy_cli': '复制命令',
+        'export.save_success': '片段 CSV 已保存至：{path}',
+        'export.save_error': '保存失败：{error}',
+        'export.copy_success': '命令已复制到剪贴板',
+        'export.copy_error': '复制失败',
+        'export.run_conversion': '运行转换',
+        'export.converting': '转换中...',
+        'export.conversion_complete': '转换完成',
+        'export.conversion_failed': '转换失败',
+        'export.task_name': '任务名称：',
+        'export.no_output_dir': '请先指定输出目录',
+        'export.no_vrs': '需要 VRS 文件才能运行转换',
+
+        // Saved Alignment
+        'saved.found': '检测到已有对齐配置',
+        'saved.load': '加载已有对齐',
+        'saved.load_cached': '直接加载结果',
+        'saved.recompute': '重新计算对齐',
+        'saved.offset': '偏移',
+        'saved.similarity': '相似度',
+        'saved.source_manual': '手动保存',
+        'saved.source_auto': '自动保存',
+
         // Download
         'download.button': '下载片段 CSV 文件',
 
@@ -126,7 +203,6 @@ const translations = {
         'visualize.stats.avg_confidence': '平均置信度',
 
         // Player Page
-        'nav.player': '数据播放器',
         'player.title': '对齐数据播放器',
         'player.subtitle': '交互式浏览和播放对齐后的数据，支持时间窗口和缩放控制',
         'player.nav.back': '返回对齐工具',
@@ -162,6 +238,28 @@ const translations = {
         'app.title': 'Aria-Haptic Time Alignment Tool',
         'app.subtitle': 'Align Project Aria hand tracking data with haptic sensor data',
         'nav.visualize': 'Data Visualization',
+        'nav.player': 'Data Player',
+        'nav.data_manager': 'Data Manager',
+        'nav.gripper': 'Gripper Visualization',
+        'nav.alignment': 'Alignment Tool',
+
+        // Workflow Guide
+        'workflow.title': 'Workflow',
+        'workflow.step1.title': 'Select Data Files',
+        'workflow.step1.desc': 'Choose a data directory under "Select Data Files". The system auto-detects MPS CSV, haptic CSV, and VRS files.',
+        'workflow.step2.title': 'Run Alignment',
+        'workflow.step2.desc': 'Confirm parameters and click "Start Alignment". The system computes the optimal time offset between Aria hand tracking and haptic data.',
+        'workflow.step3.title': 'Fine-tune Offset & Check Video',
+        'workflow.step3.desc': 'Drag the offset slider to fine-tune alignment; play the RGB video to verify; click "Save Offset Config" when satisfied.',
+        'workflow.step4.title': 'Edit Force Segments',
+        'workflow.step4.desc': 'Drag segment boundaries in the chart to adjust; click "+ Add Segment" to create new ones; right-click to delete; then click "Save Segments".',
+        'workflow.step5.title': 'Export to LeRobot',
+        'workflow.step5.desc': 'Set output directory and task name in "Export to LeRobot", then click "Run Conversion" to generate the training dataset.',
+        'workflow.tip': 'Next time you open the tool, saved alignment configs and segments are auto-detected and can be loaded instantly without re-computing.',
+
+        // Theme
+        'theme.dark': 'Switch to dark mode',
+        'theme.light': 'Switch to light mode',
 
         // Warning Banner
         'warning.aria_api.title': 'aria_api Not Installed',
@@ -197,6 +295,8 @@ const translations = {
         'params.smooth_window.help': 'Noise reduction smooth filter window',
         'params.export_segments': 'Detect and Export Segments',
         'params.export_segments.help': 'Auto-detect force segments and generate CSV',
+        'params.view_window': 'View Window (s):',
+        'params.view_window.help': 'Default visible range in chart, use bottom slider to navigate all data',
 
         // Action Button
         'action.align': 'Start Alignment Analysis',
@@ -245,6 +345,59 @@ const translations = {
         'viz.offset': 'Time Offset (s)',
         'viz.value': 'Normalized Value',
 
+        // Segments Panel
+        'segments.title': 'Force Segments',
+        'segments.add': '+ Add Segment',
+        'segments.save': '💾 Save Segments',
+        'segments.save_no_haptic': 'Load haptic data first before saving segments',
+        'segments.save_empty': 'No segments to save',
+        'segments.select_all': 'Select All',
+        'segments.deselect_all': 'Deselect All',
+        'segments.empty': 'No segments yet. Click "+ Add Segment" to create one.',
+        'segments.drag_hint': 'Drag segment boundaries in the plot to adjust. Uncheck to exclude from CSV export.',
+
+        // Episode Preview
+        'episodes.title': 'LeRobot Episode Preview',
+        'episodes.count': '{count} episodes',
+        'episodes.episode': 'Episode',
+        'episodes.time_range': 'Time Range',
+        'episodes.duration': 'Duration',
+        'episodes.frames': 'Est. Frames',
+        'episodes.source': 'Source Segment',
+        'episodes.total': 'Total',
+        'episodes.total_duration': 'Total Duration',
+        'episodes.total_frames': 'Total Frames',
+        'episodes.no_segments': 'No enabled segments. Please check at least one segment above.',
+
+        // Export
+        'export.title': 'LeRobot Export',
+        'export.output_dir': 'Output Directory:',
+        'export.output_dir_placeholder': 'LeRobot dataset output path',
+        'export.cli_label': 'CLI Command:',
+        'export.save_segments': 'Save Segments CSV',
+        'export.copy_cli': 'Copy Command',
+        'export.save_success': 'Segments CSV saved to: {path}',
+        'export.save_error': 'Save failed: {error}',
+        'export.copy_success': 'Command copied to clipboard',
+        'export.copy_error': 'Copy failed',
+        'export.run_conversion': 'Run Conversion',
+        'export.converting': 'Converting...',
+        'export.conversion_complete': 'Conversion Complete',
+        'export.conversion_failed': 'Conversion Failed',
+        'export.task_name': 'Task Name:',
+        'export.no_output_dir': 'Please specify an output directory first',
+        'export.no_vrs': 'VRS file is required for conversion',
+
+        // Saved Alignment
+        'saved.found': 'Saved alignment config found',
+        'saved.load': 'Load Saved Alignment',
+        'saved.load_cached': 'Load Results Directly',
+        'saved.recompute': 'Re-compute Alignment',
+        'saved.offset': 'Offset',
+        'saved.similarity': 'Similarity',
+        'saved.source_manual': 'Manual',
+        'saved.source_auto': 'Auto',
+
         // Download
         'download.button': 'Download Segments CSV',
 
@@ -281,7 +434,6 @@ const translations = {
         'visualize.stats.avg_confidence': 'Avg Confidence',
 
         // Player Page
-        'nav.player': 'Data Player',
         'player.title': 'Aligned Data Player',
         'player.subtitle': 'Interactively browse and play aligned data with time window and zoom controls',
         'player.nav.back': 'Back to Alignment Tool',

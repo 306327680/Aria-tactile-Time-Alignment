@@ -833,6 +833,104 @@ class AriaHapticAligner:
 
         return split_points
 
+    def detect_force_segment_pairs(self, force_threshold: float = 1.0,
+                                    min_segment_duration: float = 0.5,
+                                    min_gap_duration: float = 0.3,
+                                    smooth_window: int = 5,
+                                    padding: float = 2.0) -> list:
+        """
+        Detect force segments and return raw start/end time pairs.
+
+        Args:
+            force_threshold: Minimum force value to consider as "active" (default: 1.0)
+            min_segment_duration: Minimum duration (seconds) for a valid segment
+            min_gap_duration: Minimum gap duration (seconds) between segments
+            smooth_window: Window size for moving average smoothing (default: 5)
+            padding: Extra seconds to extend each segment on both sides (default: 2.0)
+
+        Returns:
+            List of dicts: [{'id': int, 'start': float, 'end': float,
+                             'duration': float, 'enabled': True}, ...]
+            Times are in Aria coordinate system (seconds from Aria start).
+        """
+        from scipy.ndimage import uniform_filter1d
+
+        # Apply time offset to align haptic with Aria timeline
+        haptic_aligned_time = self.haptic_timestamps + self.optimal_offset
+
+        # Smooth the force signal to reduce noise
+        if smooth_window > 1:
+            force_smoothed = uniform_filter1d(self.haptic_force, size=smooth_window, mode='nearest')
+        else:
+            force_smoothed = self.haptic_force
+
+        # Identify active regions (force > threshold)
+        is_active = force_smoothed > force_threshold
+
+        # Find transitions
+        segments = []
+        in_segment = False
+        segment_start = None
+
+        for i in range(len(is_active)):
+            if is_active[i] and not in_segment:
+                segment_start = haptic_aligned_time[i]
+                in_segment = True
+            elif not is_active[i] and in_segment:
+                segment_end = haptic_aligned_time[i]
+                duration = segment_end - segment_start
+                if duration >= min_segment_duration:
+                    segments.append((segment_start, segment_end))
+                in_segment = False
+
+        # Handle case where last segment extends to end
+        if in_segment:
+            segment_end = haptic_aligned_time[-1]
+            duration = segment_end - segment_start
+            if duration >= min_segment_duration:
+                segments.append((segment_start, segment_end))
+
+        # Merge segments that are too close together
+        if len(segments) > 1:
+            merged_segments = [segments[0]]
+            for start, end in segments[1:]:
+                prev_start, prev_end = merged_segments[-1]
+                gap = start - prev_end
+                if gap < min_gap_duration:
+                    merged_segments[-1] = (prev_start, end)
+                else:
+                    merged_segments.append((start, end))
+            segments = merged_segments
+
+        # Apply padding: extend each segment by `padding` seconds on both sides
+        if padding > 0 and len(segments) > 0:
+            time_min = float(haptic_aligned_time[0])
+            time_max = float(haptic_aligned_time[-1])
+            segments = [(max(s - padding, time_min), min(e + padding, time_max))
+                        for s, e in segments]
+            # Re-merge segments that now overlap after padding
+            if len(segments) > 1:
+                merged = [segments[0]]
+                for s, e in segments[1:]:
+                    ps, pe = merged[-1]
+                    if s <= pe:
+                        merged[-1] = (ps, max(pe, e))
+                    else:
+                        merged.append((s, e))
+                segments = merged
+
+        # Return as list of dicts with id and enabled flag
+        return [
+            {
+                'id': i,
+                'start': float(start),
+                'end': float(end),
+                'duration': float(end - start),
+                'enabled': True
+            }
+            for i, (start, end) in enumerate(segments)
+        ]
+
     def export_segments_csv(self, segments: list, output_path: str):
         """
         Export segment split points to CSV file.

@@ -13,6 +13,7 @@ Dependencies:
 """
 
 import os
+import sys
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -20,6 +21,9 @@ from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import tempfile
 import shutil
+import threading
+import uuid
+import time as time_module
 from aria_haptic_align import AriaHapticAligner, ARIA_API_AVAILABLE
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -36,6 +40,44 @@ app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 
 ALLOWED_EXTENSIONS = {'vrs', 'csv', 'stl', 'step', 'stp', 'urdf', 'xml'}
+
+# --- Aria-to-Lerobot 动态导入 ---
+def _get_aria2lerobot_convert():
+    """动态导入 Aria-to-Lerobot 的 convert 函数（目录名含连字符，无法直接 import）"""
+    import importlib.util
+    pkg_dir = os.path.join(os.path.dirname(base_dir), 'Aria-to-Lerobot')
+    init_path = os.path.join(pkg_dir, '__init__.py')
+    if not os.path.exists(init_path):
+        raise ImportError(f"Aria-to-Lerobot package not found at {pkg_dir}")
+    if 'aria2lerobot' not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            'aria2lerobot', init_path,
+            submodule_search_locations=[pkg_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules['aria2lerobot'] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules['aria2lerobot'].convert
+
+# --- 转换任务追踪 ---
+_conversion_jobs = {}
+_conversion_lock = threading.Lock()
+
+def _run_conversion_worker(job_id, convert_kwargs):
+    """后台线程：运行 Aria-to-Lerobot 转换"""
+    with _conversion_lock:
+        _conversion_jobs[job_id]['status'] = 'running'
+    try:
+        convert_fn = _get_aria2lerobot_convert()
+        result = convert_fn(**convert_kwargs)
+        with _conversion_lock:
+            _conversion_jobs[job_id].update(
+                status='completed', result=result, end_time=time_module.time())
+    except Exception as e:
+        import traceback
+        with _conversion_lock:
+            _conversion_jobs[job_id].update(
+                status='failed', error=str(e),
+                traceback_str=traceback.format_exc(), end_time=time_module.time())
 
 # Check required dependencies
 DEPENDENCIES_OK = True
@@ -65,7 +107,7 @@ def allowed_file(filename, extensions):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in extensions
 
 
-def create_plotly_figure(aligner, segments=None, force_max_threshold=None):
+def create_plotly_figure(aligner, segments=None, force_max_threshold=None, view_window=30.0):
     """
     Create interactive Plotly figure for alignment visualization.
 
@@ -135,215 +177,77 @@ def create_plotly_figure(aligner, segments=None, force_max_threshold=None):
     print(f"DEBUG: Aria norm range: {np.nanmin(aria_norm):.3f} - {np.nanmax(aria_norm):.3f}")
     print(f"DEBUG: Haptic norm range: {np.nanmin(haptic_norm):.3f} - {np.nanmax(haptic_norm):.3f} ({haptic_nan_count} NaN values filtered)")
 
-    # Create subplots with secondary y-axes for rows 1 and 2
+    # Single subplot: After Alignment with rangeslider
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=1, cols=1,
         subplot_titles=(
-            'Before Alignment (对齐前)',
             f'After Alignment (对齐后, offset = {aligner.optimal_offset:.3f}s)',
-            'Similarity Score vs Time Offset (相似度曲线)'
         ),
-        vertical_spacing=0.12,
-        row_heights=[0.35, 0.35, 0.30],
-        specs=[
-            [{"secondary_y": True}],  # Row 1: dual y-axis
-            [{"secondary_y": True}],  # Row 2: dual y-axis
-            [{"secondary_y": False}]  # Row 3: single y-axis
-        ]
+        specs=[[{"secondary_y": True}]]
     )
 
-    # Plot 1: Before alignment
-    print(f"DEBUG: Adding Plot 1 traces")
-    print(f"DEBUG: Aria trace - x length: {len(aligner.aria_timestamps)}, y length: {len(aligner.aria_distance)}")
-    print(f"DEBUG: Haptic trace - x length: {len(aligner.haptic_timestamps)}, y length: {len(haptic_force_display)}")
-
-    # Check data ranges for overlap
-    aria_time_min, aria_time_max = aligner.aria_timestamps[0], aligner.aria_timestamps[-1]
-    haptic_time_min, haptic_time_max = aligner.haptic_timestamps[0], aligner.haptic_timestamps[-1]
-    print(f"DEBUG: Time overlap check: Aria [{aria_time_min:.2f}, {aria_time_max:.2f}], Haptic [{haptic_time_min:.2f}, {haptic_time_max:.2f}]")
-
-    # Convert to lists to ensure compatibility - use REAL values, not normalized
+    # Convert to lists
     aria_x = aligner.aria_timestamps.tolist() if hasattr(aligner.aria_timestamps, 'tolist') else list(aligner.aria_timestamps)
-    # Use real distance values (not inverted, not normalized)
     aria_y_real = aligner.aria_distance.tolist() if hasattr(aligner.aria_distance, 'tolist') else list(aligner.aria_distance)
-    haptic_x = aligner.haptic_timestamps.tolist() if hasattr(aligner.haptic_timestamps, 'tolist') else list(aligner.haptic_timestamps)
-    # Use real force values with threshold masking
+    haptic_aligned_x = (aligner.haptic_timestamps + aligner.optimal_offset).tolist() if hasattr(aligner.haptic_timestamps, 'tolist') else list(aligner.haptic_timestamps + aligner.optimal_offset)
     haptic_y_real = haptic_force_display.tolist() if hasattr(haptic_force_display, 'tolist') else list(haptic_force_display)
 
-    print(f"DEBUG: Converted arrays to lists - aria_x: {len(aria_x)}, aria_y: {len(aria_y_real)}, haptic_x: {len(haptic_x)}, haptic_y: {len(haptic_y_real)}")
-
-    # Plot 1: Before alignment - Aria distance on left Y-axis (primary)
     fig.add_trace(
-        go.Scatter(
-            x=aria_x,
-            y=aria_y_real,
-            name='Aria 距离 (m)',
-            line=dict(color='blue', width=2),
-            mode='lines'
-        ),
+        go.Scatter(x=aria_x, y=aria_y_real, name='Aria距离(m)',
+                   line=dict(color='blue', width=2), mode='lines'),
         row=1, col=1, secondary_y=False
     )
-    print(f"DEBUG: Added Aria trace to Plot 1")
-
-    # Plot 1: Haptic force on right Y-axis (secondary)
     fig.add_trace(
-        go.Scatter(
-            x=haptic_x,
-            y=haptic_y_real,
-            name='触觉力 (N)',
-            line=dict(color='red', width=2),
-            mode='lines'
-        ),
+        go.Scatter(x=haptic_aligned_x, y=haptic_y_real,
+                   name=f'触觉力(N)',
+                   line=dict(color='red', width=2), mode='lines'),
         row=1, col=1, secondary_y=True
     )
-    print(f"DEBUG: Plot 1 traces added successfully")
 
-    # Plot 2: After alignment
-    haptic_aligned_x = (aligner.haptic_timestamps + aligner.optimal_offset).tolist() if hasattr(aligner.haptic_timestamps, 'tolist') else list(aligner.haptic_timestamps + aligner.optimal_offset)
-
-    # Plot 2: Aria distance on left Y-axis (primary)
-    fig.add_trace(
-        go.Scatter(
-            x=aria_x,
-            y=aria_y_real,
-            name='Aria 距离 (m)',
-            line=dict(color='blue', width=2),
-            mode='lines',
-            showlegend=False
-        ),
-        row=2, col=1, secondary_y=False
-    )
-    print(f"DEBUG: Added Aria trace to Plot 2")
-
-    # Plot 2: Haptic force on right Y-axis (secondary)
-    fig.add_trace(
-        go.Scatter(
-            x=haptic_aligned_x,
-            y=haptic_y_real,
-            name=f'触觉力 (偏移 +{aligner.optimal_offset:.3f}s)',
-            line=dict(color='red', width=2),
-            mode='lines',
-            showlegend=False
-        ),
-        row=2, col=1, secondary_y=True
-    )
-    print(f"DEBUG: Added Haptic trace to Plot 2 (aligned)")
-
-    # Add segment split lines
-    if segments:
-        for i, (split_time, idx) in enumerate(segments):
-            fig.add_vline(
-                x=split_time,
-                line=dict(color='red', dash='dash', width=1),
-                row=2, col=1
-            )
-
-    # Plot 3: Correlation curve
-    offsets_list = aligner.search_offsets.tolist() if hasattr(aligner.search_offsets, 'tolist') else list(aligner.search_offsets)
-    scores_list = aligner.correlation_scores.tolist() if hasattr(aligner.correlation_scores, 'tolist') else list(aligner.correlation_scores)
-
-    print(f"DEBUG: Adding Plot 3 - offsets length: {len(offsets_list)}, scores length: {len(scores_list)}")
-
-    fig.add_trace(
-        go.Scatter(
-            x=offsets_list,
-            y=scores_list,
-            name='Similarity score',
-            line=dict(color='green', width=2),
-            mode='lines',
-            showlegend=False
-        ),
-        row=3, col=1
-    )
-    print(f"DEBUG: Added correlation curve to Plot 3")
-    fig.add_vline(
-        x=aligner.optimal_offset,
-        line=dict(color='red', dash='dash'),
-        row=3, col=1
-    )
-
-    # Update axes labels and ranges
-    # For Plot 1 (Before Alignment), set x-axis range to encompass both signals
-    x_min_plot1 = min(aligner.aria_timestamps[0], aligner.haptic_timestamps[0])
-    x_max_plot1 = max(aligner.aria_timestamps[-1], aligner.haptic_timestamps[-1])
-
-    print(f"DEBUG: Plot 1 x-axis range: [{x_min_plot1:.2f}, {x_max_plot1:.2f}]")
-
-    # For Plot 2 (After Alignment), set x-axis range to encompass both aligned signals
+    # X-axis with rangeslider for navigation
     haptic_aligned_min = aligner.haptic_timestamps[0] + aligner.optimal_offset
     haptic_aligned_max = aligner.haptic_timestamps[-1] + aligner.optimal_offset
-    x_min_plot2 = min(aligner.aria_timestamps[0], haptic_aligned_min)
-    x_max_plot2 = max(aligner.aria_timestamps[-1], haptic_aligned_max)
+    x_min = min(aligner.aria_timestamps[0], haptic_aligned_min)
+    x_max = max(aligner.aria_timestamps[-1], haptic_aligned_max)
+    total_duration = x_max - x_min
+    visible_max = (x_min + view_window) if total_duration > view_window else x_max
 
-    print(f"DEBUG: Plot 2 x-axis range: [{x_min_plot2:.2f}, {x_max_plot2:.2f}]")
+    fig.update_xaxes(title_text="时间 (s)",
+                     range=[x_min, visible_max],
+                     rangeslider=dict(visible=True, thickness=0.10,
+                                      range=[x_min, x_max]))
 
-    fig.update_xaxes(title_text="时间 (s)", row=1, col=1, range=[x_min_plot1, x_max_plot1])
-    fig.update_xaxes(title_text="时间 (s)", row=2, col=1, range=[x_min_plot2, x_max_plot2])
-    fig.update_xaxes(title_text="时间偏移 (s)", row=3, col=1)
-
-    # Calculate Y-axis ranges
+    # Y-axes
     aria_min, aria_max = float(np.min(aligner.aria_distance)), float(np.max(aligner.aria_distance))
     aria_padding = (aria_max - aria_min) * 0.05
     haptic_min = 0
     haptic_max_val = force_max_threshold if force_max_threshold and force_max_threshold > 0 else float(np.nanmax(haptic_force_display))
     haptic_padding = haptic_max_val * 0.05
 
-    # Update Y-axes for Plot 1 (Before Alignment)
-    fig.update_yaxes(
-        title_text="距离 (m)",
-        title_font=dict(color='blue'),
-        tickfont=dict(color='blue'),
-        range=[aria_min - aria_padding, aria_max + aria_padding],
-        row=1, col=1, secondary_y=False
-    )
-    fig.update_yaxes(
-        title_text="力 (N)",
-        title_font=dict(color='red'),
-        tickfont=dict(color='red'),
-        range=[haptic_min, haptic_max_val + haptic_padding],
-        row=1, col=1, secondary_y=True
-    )
+    fig.update_yaxes(title_text="距离 (m)", title_font=dict(color='blue'), tickfont=dict(color='blue'),
+                     range=[aria_min - aria_padding, aria_max + aria_padding], secondary_y=False)
+    fig.update_yaxes(title_text="力 (N)", title_font=dict(color='red'), tickfont=dict(color='red'),
+                     range=[haptic_min, haptic_max_val + haptic_padding], secondary_y=True)
 
-    # Update Y-axes for Plot 2 (After Alignment)
-    fig.update_yaxes(
-        title_text="距离 (m)",
-        title_font=dict(color='blue'),
-        tickfont=dict(color='blue'),
-        range=[aria_min - aria_padding, aria_max + aria_padding],
-        row=2, col=1, secondary_y=False
-    )
-    fig.update_yaxes(
-        title_text="力 (N)",
-        title_font=dict(color='red'),
-        tickfont=dict(color='red'),
-        range=[haptic_min, haptic_max_val + haptic_padding],
-        row=2, col=1, secondary_y=True
-    )
-
-    # Update Y-axis for Plot 3 (Similarity)
-    fig.update_yaxes(title_text="相似度分数", row=3, col=1)
-
-    # Update layout
     fig.update_layout(
-        height=1000,
+        height=350,
         showlegend=True,
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1,
+            font=dict(size=11)
+        ),
         template='plotly_white',
         hovermode='x unified',
+        dragmode='pan',
         autosize=True,
-        margin=dict(l=80, r=80, t=80, b=50)
+        margin=dict(l=50, r=50, t=30, b=30)
     )
 
-    print(f"DEBUG: Final figure creation complete")
-    print(f"DEBUG: Number of traces: {len(fig.data)}")
-    for i, trace in enumerate(fig.data):
-        if len(trace.x) > 0 and len(trace.y) > 0:
-            print(f"DEBUG: Trace {i} - {trace.name}: x length={len(trace.x)}, x=[{trace.x[0]:.2f}, {trace.x[-1]:.2f}], y length={len(trace.y)}, y=[{trace.y[0]:.3f}, {trace.y[-1]:.3f}]")
-        else:
-            print(f"WARNING: Trace {i} - {trace.name}: EMPTY DATA - x length={len(trace.x)}, y length={len(trace.y)}")
-
     fig_json = json.loads(fig.to_json())
-    print(f"DEBUG: Figure JSON created successfully")
-
     return fig_json
 
 
@@ -411,6 +315,7 @@ def align():
         force_max_threshold = float(request.form.get('force_max_threshold', 500.0))
         smooth_window = int(request.form.get('smooth_window', 5))
         export_segments = request.form.get('export_segments', 'true').lower() == 'true'
+        view_window = float(request.form.get('view_window', 30.0))
 
         # Save uploaded files to temp directory
         aria_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(aria_file.filename))
@@ -449,29 +354,20 @@ def align():
                     )
         aligner.find_optimal_offset(max_offset=max_offset, method=method)
 
-        # Detect segments
-        segments = None
+        # Detect segments as start/end pairs
+        segment_pairs = None
         csv_data = None
         if export_segments:
-            segments = aligner.detect_force_segments(
+            segment_pairs = aligner.detect_force_segment_pairs(
                 force_threshold=force_threshold,
                 smooth_window=smooth_window
             )
 
-            # Convert segments to DataFrame for export
-            if segments:
-                csv_data = pd.DataFrame([
-                    {
-                        'split_index': idx,
-                        'split_time_s': f'{split_time:.3f}',
-                        'before_segment': idx,
-                        'after_segment': idx + 1
-                    }
-                    for split_time, idx in segments
-                ]).to_csv(index=False)
+            if segment_pairs:
+                csv_data = pd.DataFrame(segment_pairs).to_csv(index=False)
 
-        # Create plotly figure with threshold for display
-        plotly_json = create_plotly_figure(aligner, segments, force_max_threshold)
+        # Create plotly figure (segment shapes managed by frontend)
+        plotly_json = create_plotly_figure(aligner, None, force_max_threshold, view_window)
 
         # Prepare normalized data for interactive slider
         aria_norm = (aligner.aria_distance - aligner.aria_distance.min()) / \
@@ -500,7 +396,7 @@ def align():
             'haptic_sample_count': len(aligner.haptic_timestamps),
             'haptic_filtered_count': filtered_count,
             'force_max_threshold': force_max_threshold,
-            'segment_count': len(segments) if segments else 0,
+            'segment_count': len(segment_pairs) if segment_pairs else 0,
             'plotly_json': plotly_json,
             'segments_csv': csv_data,
             # Additional data for interactive slider
@@ -513,7 +409,7 @@ def align():
             'offsets': aligner.search_offsets.tolist(),
             'correlation_scores': aligner.correlation_scores.tolist(),
             'max_offset': max_offset,
-            'segments': [{'time': float(t), 'index': int(idx)} for t, idx in segments] if segments else []
+            'force_segments': segment_pairs if segment_pairs else []
         }
 
         return jsonify(results)
@@ -556,6 +452,7 @@ def align_from_path():
         force_max_threshold = float(data.get('force_max_threshold', 500.0))
         smooth_window = int(data.get('smooth_window', 5))
         export_segments = data.get('export_segments', True)
+        view_window = float(data.get('view_window', 30.0))
 
         # Run alignment based on available data
         if use_mps_csv:
@@ -584,28 +481,20 @@ def align_from_path():
 
         aligner.find_optimal_offset(max_offset=max_offset, method=method)
 
-        # Detect segments
-        segments = None
+        # Detect segments as start/end pairs
+        segment_pairs = None
         csv_data = None
         if export_segments:
-            segments = aligner.detect_force_segments(
+            segment_pairs = aligner.detect_force_segment_pairs(
                 force_threshold=force_threshold,
                 smooth_window=smooth_window
             )
 
-            if segments:
-                csv_data = pd.DataFrame([
-                    {
-                        'split_index': idx,
-                        'split_time_s': f'{split_time:.3f}',
-                        'before_segment': idx,
-                        'after_segment': idx + 1
-                    }
-                    for split_time, idx in segments
-                ]).to_csv(index=False)
+            if segment_pairs:
+                csv_data = pd.DataFrame(segment_pairs).to_csv(index=False)
 
-        # Create plotly figure
-        plotly_json = create_plotly_figure(aligner, segments, force_max_threshold)
+        # Create plotly figure (segment shapes managed by frontend)
+        plotly_json = create_plotly_figure(aligner, None, force_max_threshold, view_window)
 
         # Prepare normalized data for interactive slider
         aria_norm = (aligner.aria_distance - aligner.aria_distance.min()) / \
@@ -632,7 +521,7 @@ def align_from_path():
             'haptic_sample_count': len(aligner.haptic_timestamps),
             'haptic_filtered_count': filtered_count,
             'force_max_threshold': force_max_threshold,
-            'segment_count': len(segments) if segments else 0,
+            'segment_count': len(segment_pairs) if segment_pairs else 0,
             'plotly_json': plotly_json,
             'segments_csv': csv_data,
             'aria_timestamps': aligner.aria_timestamps.tolist(),
@@ -644,7 +533,7 @@ def align_from_path():
             'offsets': aligner.search_offsets.tolist(),
             'correlation_scores': aligner.correlation_scores.tolist(),
             'max_offset': max_offset,
-            'segments': [{'time': float(t), 'index': int(idx)} for t, idx in segments] if segments else [],
+            'force_segments': segment_pairs if segment_pairs else [],
             # Include source file info
             'source_files': {
                 'mps_csv': mps_csv_path if use_mps_csv else None,
@@ -652,6 +541,9 @@ def align_from_path():
                 'vrs': vrs_path if use_vrs else None
             }
         }
+
+        # Auto-save alignment cache for fast reload
+        _save_alignment_cache(results, haptic_csv_path, mps_csv_path, vrs_path)
 
         return jsonify(results)
 
@@ -661,6 +553,116 @@ def align_from_path():
         stack_trace = traceback.format_exc()
         print(f"Error: {error_msg}\n{stack_trace}")
         return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+def _get_config_dir(data_dir):
+    """Get (and create) the alignment_configs/ subfolder under the data directory."""
+    config_dir = os.path.join(data_dir, 'alignment_configs')
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+
+def _get_alignment_cache_path(haptic_path, mps_path=None, vrs_path=None):
+    """Get the cache file path for alignment results."""
+    save_dir = None
+    base_name = None
+    if haptic_path and os.path.exists(haptic_path):
+        save_dir = os.path.dirname(haptic_path)
+        base_name = Path(haptic_path).stem
+    elif mps_path and os.path.exists(mps_path):
+        mps_parent = Path(mps_path).parent.parent.parent
+        if mps_parent.exists():
+            save_dir = str(mps_parent)
+            base_name = Path(mps_path).parent.parent.name.replace('mps_', '')
+    elif vrs_path and os.path.exists(vrs_path):
+        save_dir = os.path.dirname(vrs_path)
+        base_name = Path(vrs_path).stem
+    if not save_dir or not base_name:
+        return None
+    config_dir = _get_config_dir(save_dir)
+    new_path = os.path.join(config_dir, f"{base_name}_alignment_cache.json.gz")
+    # Backward compat: migrate old file if exists
+    old_path = os.path.join(save_dir, f"{base_name}_alignment_cache.json.gz")
+    if not os.path.exists(new_path) and os.path.exists(old_path):
+        import shutil
+        shutil.move(old_path, new_path)
+        print(f"Migrated cache: {old_path} -> {new_path}")
+    return new_path
+
+
+def _save_alignment_cache(results, haptic_path, mps_path=None, vrs_path=None):
+    """Save alignment results to a gzipped JSON file for fast reload."""
+    import gzip
+    cache_path = _get_alignment_cache_path(haptic_path, mps_path, vrs_path)
+    if not cache_path:
+        return
+    try:
+        # Add cache version to detect stale layouts
+        results['_cache_version'] = 2  # v2 = single subplot with rangeslider
+        with gzip.open(cache_path, 'wt', encoding='utf-8') as f:
+            json.dump(results, f)
+        print(f"Alignment cache saved: {cache_path}")
+    except Exception as e:
+        print(f"Failed to save alignment cache: {e}")
+
+
+@app.route('/api/load_saved_alignment', methods=['POST'])
+def load_saved_alignment():
+    """Load cached alignment results without re-computing."""
+    import gzip
+    try:
+        data = request.get_json()
+        haptic_path = data.get('haptic_csv_path')
+        mps_path = data.get('mps_csv_path')
+        vrs_path = data.get('vrs_path')
+
+        cache_path = _get_alignment_cache_path(haptic_path, mps_path, vrs_path)
+        if not cache_path or not os.path.exists(cache_path):
+            return jsonify({'error': 'No cached alignment results found', 'no_cache': True}), 404
+
+        with gzip.open(cache_path, 'rt', encoding='utf-8') as f:
+            results = json.load(f)
+
+        # Check for stale cache: v2 = single subplot with rangeslider
+        cache_version = results.get('_cache_version', 0)
+        is_stale = False
+        if cache_version < 2:
+            is_stale = True
+        elif 'plotly_json' in results:
+            layout = results['plotly_json'].get('layout', {})
+            # If xaxis2 exists, this is a multi-subplot layout (stale)
+            if 'xaxis2' in layout:
+                is_stale = True
+
+        if is_stale:
+            # Delete stale cache and force re-computation
+            try:
+                os.remove(cache_path)
+                print(f"Deleted stale alignment cache: {cache_path}")
+            except OSError:
+                pass
+            return jsonify({'error': 'Stale cache invalidated, please re-compute', 'no_cache': True}), 404
+
+        # Override layout properties to match current settings
+        if 'plotly_json' in results:
+            layout = results['plotly_json'].get('layout', {})
+            layout['height'] = 350
+            layout['margin'] = dict(l=50, r=50, t=30, b=30)
+            layout['legend'] = dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1,
+                font=dict(size=11)
+            )
+
+        results['from_cache'] = True
+        return jsonify(results)
+
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 
 @app.route('/download_segments', methods=['POST'])
@@ -687,8 +689,288 @@ def download_segments():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/visualize_data', methods=['POST'])
-def visualize_data():
+@app.route('/api/save_segments_csv', methods=['POST'])
+def save_segments_csv():
+    """保存片段 CSV 到数据目录，供下游 Aria-to-Lerobot 管线使用"""
+    try:
+        data = request.get_json()
+        segments = data.get('segments', [])
+        haptic_path = data.get('haptic_path')
+        offset = data.get('offset', 0.0)
+
+        if not segments:
+            return jsonify({'success': False, 'error': '没有片段数据'}), 400
+
+        if not haptic_path or not os.path.exists(haptic_path):
+            return jsonify({'success': False, 'error': f'触觉文件路径无效: {haptic_path}'}), 400
+
+        # 保存到 alignment_configs/ 子文件夹
+        save_dir = os.path.dirname(haptic_path)
+        config_dir = _get_config_dir(save_dir)
+        base_name = Path(haptic_path).stem
+        segments_filename = f"{base_name}_segments.csv"
+        segments_path = os.path.join(config_dir, segments_filename)
+
+        import csv as csv_module
+        with open(segments_path, 'w', newline='') as f:
+            writer = csv_module.writer(f)
+            writer.writerow(['segment_id', 'start_time_s', 'end_time_s', 'duration_s', 'enabled', 'source'])
+            for seg in segments:
+                writer.writerow([
+                    seg['id'],
+                    f"{seg['start']:.3f}",
+                    f"{seg['end']:.3f}",
+                    f"{seg['duration']:.3f}",
+                    str(seg['enabled']).lower(),
+                    seg.get('source', 'auto')
+                ])
+
+        print(f"[save_segments_csv] Saved {len(segments)} segments to {segments_path}")
+
+        return jsonify({
+            'success': True,
+            'segments_csv_path': segments_path,
+            'message': f'已保存 {len(segments)} 个片段到 {segments_filename}'
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/load_segments', methods=['POST'])
+def load_segments():
+    """加载已保存的片段 CSV"""
+    try:
+        data = request.get_json()
+        haptic_path = data.get('haptic_path')
+
+        if not haptic_path or not os.path.exists(haptic_path):
+            return jsonify({'success': False, 'found': False}), 200
+
+        save_dir = os.path.dirname(haptic_path)
+        config_dir = _get_config_dir(save_dir)
+        base_name = Path(haptic_path).stem
+        segments_path = os.path.join(config_dir, f"{base_name}_segments.csv")
+
+        # Backward compat: check old location
+        if not os.path.exists(segments_path):
+            old_path = os.path.join(save_dir, f"{base_name}_segments.csv")
+            if os.path.exists(old_path):
+                import shutil
+                shutil.move(old_path, segments_path)
+                print(f"Migrated segments: {old_path} -> {segments_path}")
+
+        if not os.path.exists(segments_path):
+            return jsonify({'success': True, 'found': False}), 200
+
+        import csv as csv_module
+        segments = []
+        with open(segments_path, 'r') as f:
+            reader = csv_module.DictReader(f)
+            for row in reader:
+                segments.append({
+                    'id': int(row['segment_id']),
+                    'start': float(row['start_time_s']),
+                    'end': float(row['end_time_s']),
+                    'duration': float(row['duration_s']),
+                    'enabled': row['enabled'].lower() == 'true',
+                    'source': row.get('source', 'auto')
+                })
+
+        print(f"[load_segments] Loaded {len(segments)} segments from {segments_path}")
+
+        return jsonify({
+            'success': True,
+            'found': True,
+            'segments': segments,
+            'segments_csv_path': segments_path
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/run_conversion', methods=['POST'])
+def run_conversion():
+    """启动 Aria-to-LeRobot 后台转换"""
+    try:
+        data = request.get_json()
+
+        vrs_path = data.get('vrs_path')
+        haptic_csv = data.get('haptic_csv')
+        haptic_offset = float(data.get('haptic_offset', 0.0))
+        segments_csv_path = data.get('segments_csv')
+        output_dir = data.get('output_dir')
+        task_name = data.get('task_name', 'aria_recording')
+
+        # 推导 MPS 目录
+        mps_dir = data.get('mps_dir')
+        mps_csv_path = data.get('mps_csv_path')
+        if not mps_dir and mps_csv_path:
+            parts = mps_csv_path.replace('\\', '/').split('/')
+            ht_idx = None
+            for i, part in enumerate(parts):
+                if part == 'hand_tracking':
+                    ht_idx = i
+                    break
+            if ht_idx:
+                mps_dir = '/'.join(parts[:ht_idx])
+            else:
+                mps_dir = '/'.join(parts[:-1])
+
+        # 如果没有 segments_csv 文件但有 segments 数组，自动保存
+        segments_data = data.get('segments')
+        if (not segments_csv_path or not os.path.exists(str(segments_csv_path))) and segments_data and haptic_csv:
+            import csv as csv_module
+            save_dir = os.path.dirname(haptic_csv)
+            config_dir = _get_config_dir(save_dir)
+            base_name = Path(haptic_csv).stem
+            segments_csv_path = os.path.join(config_dir, f"{base_name}_segments.csv")
+            with open(segments_csv_path, 'w', newline='') as f:
+                writer = csv_module.writer(f)
+                writer.writerow(['segment_id', 'start_time_s', 'end_time_s', 'duration_s', 'enabled'])
+                for seg in segments_data:
+                    writer.writerow([
+                        seg['id'],
+                        f"{seg['start']:.3f}",
+                        f"{seg['end']:.3f}",
+                        f"{seg['duration']:.3f}",
+                        str(seg['enabled']).lower()
+                    ])
+            print(f"[run_conversion] Auto-saved segments CSV to {segments_csv_path}")
+
+        # 校验
+        errors = []
+        if not vrs_path or not os.path.exists(str(vrs_path)):
+            errors.append(f'VRS file not found: {vrs_path}')
+        if not mps_dir or not os.path.isdir(str(mps_dir)):
+            errors.append(f'MPS directory not found: {mps_dir}')
+        if not output_dir:
+            errors.append('Output directory is required')
+        if not segments_csv_path or not os.path.exists(str(segments_csv_path)):
+            errors.append(f'Segments CSV not found: {segments_csv_path}')
+        if errors:
+            return jsonify({'success': False, 'errors': errors}), 400
+
+        # 检查并发
+        with _conversion_lock:
+            running = [jid for jid, j in _conversion_jobs.items() if j['status'] == 'running']
+            if running:
+                return jsonify({
+                    'success': False,
+                    'error': '已有转换任务在运行中，请等待完成',
+                    'running_job_id': running[0]
+                }), 409
+
+        job_id = str(uuid.uuid4())[:8]
+
+        convert_kwargs = {
+            'vrs_path': vrs_path,
+            'mps_dir': mps_dir,
+            'out_dir': output_dir,
+            'haptic_csv': haptic_csv,
+            'haptic_time_offset': haptic_offset,
+            'segments_csv': segments_csv_path,
+            'overwrite': True,
+            'task_name': task_name,
+            'log_level': 'INFO',
+        }
+
+        with _conversion_lock:
+            _conversion_jobs[job_id] = {
+                'status': 'pending',
+                'start_time': time_module.time(),
+                'end_time': None,
+                'result': None,
+                'error': None,
+                'traceback_str': None,
+                'output_dir': output_dir,
+            }
+
+        thread = threading.Thread(
+            target=_run_conversion_worker,
+            args=(job_id, convert_kwargs),
+            daemon=True
+        )
+        thread.start()
+
+        return jsonify({
+            'success': True,
+            'job_id': job_id,
+            'message': '转换已启动'
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/conversion_status/<job_id>', methods=['GET'])
+def conversion_status(job_id):
+    """查询转换任务状态"""
+    with _conversion_lock:
+        job = _conversion_jobs.get(job_id)
+
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+
+    response = {
+        'success': True,
+        'job_id': job_id,
+        'status': job['status'],
+        'elapsed_s': round(
+            (job['end_time'] or time_module.time()) - job['start_time'], 1
+        ),
+        'output_dir': job['output_dir'],
+    }
+
+    if job['status'] == 'completed' and job['result']:
+        result = job['result']
+        response['result'] = {
+            'mode': result.get('mode', 'single'),
+            'num_episodes': result.get('num_chunks', 1),
+            'total_frames': result.get('processing', {}).get('valid_frames', 0),
+            'elapsed_time_s': round(result.get('processing', {}).get('elapsed_time_s', 0), 1),
+            'parquet_shards': result.get('files', {}).get('parquet_shards', 0),
+            'video_shards': result.get('files', {}).get('video_shards', 0),
+        }
+        if 'chunks' in result:
+            episodes = []
+            for chunk in result['chunks']:
+                cr = chunk.get('result', {})
+                episodes.append({
+                    'episode_id': chunk.get('chunk_idx', 0),
+                    'frames': cr.get('processing', {}).get('valid_frames', 0),
+                    'start_time_s': chunk.get('start_time_s'),
+                    'end_time_s': chunk.get('end_time_s'),
+                    'elapsed_s': round(cr.get('processing', {}).get('elapsed_time_s', 0), 1),
+                })
+            response['result']['episodes'] = episodes
+
+    elif job['status'] == 'failed':
+        response['error'] = job.get('error', 'Unknown error')
+        response['traceback'] = job.get('traceback_str', '')
+
+    # 运行中：读取 conversion.log 尾部
+    if job['status'] == 'running' and job['output_dir']:
+        log_path = os.path.join(job['output_dir'], 'conversion.log')
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, 'r') as f:
+                    lines = f.readlines()
+                    response['log_tail'] = ''.join(lines[-5:])
+            except Exception:
+                pass
+
+    return jsonify(response)
+
+
+
     """Process and visualize data files"""
     try:
         file_type = request.form.get('file_type', 'mps')  # 'mps' or 'haptic'
@@ -1125,12 +1407,42 @@ def load_hand_landmarks(mps_csv_path):
 
 # ==================== Data Manager Routes ====================
 # Default data root directory
-DEFAULT_DATA_ROOT = os.path.expanduser('~/Documents/Aria_data/IROS_data')
+DEFAULT_DATA_ROOT = '/mnt/zyl/data/IROS_data'
 
 
 def get_data_root():
     """Get the configured data root directory"""
     return os.environ.get('ARIA_DATA_ROOT', DEFAULT_DATA_ROOT)
+
+
+def _get_csv_duration(csv_path):
+    """快速获取 CSV 文件的录制时长（秒），只读首行和末行。"""
+    try:
+        with open(csv_path, 'r') as f:
+            header = f.readline().strip().split(',')
+            # 查找 Relative_Time_ms 列
+            col_idx = None
+            for i, col in enumerate(header):
+                if col.strip().lower() == 'relative_time_ms':
+                    col_idx = i
+                    break
+            if col_idx is None:
+                return None
+            # 快速定位文件末尾读取最后一行
+            f.seek(0, 2)
+            fsize = f.tell()
+            if fsize < 2:
+                return None
+            # 回退读取最后一行
+            f.seek(max(fsize - 4096, 0))
+            lines = f.readlines()
+            last_line = lines[-1].strip() if lines[-1].strip() else lines[-2].strip()
+            fields = last_line.split(',')
+            if col_idx < len(fields):
+                return round(float(fields[col_idx]) / 1000.0, 1)
+    except Exception:
+        pass
+    return None
 
 
 def scan_data_directory(directory):
@@ -1142,31 +1454,46 @@ def scan_data_directory(directory):
         return []
 
     # First, scan for offset config files to know which groups have alignment
+    # Check both alignment_configs/ subfolder and root dir (backward compat)
     # Store both by exact name and by VRS-related name for matching
     offset_configs = {}
     offset_configs_by_vrs = {}  # Maps VRS base name to config
-    for config_file in directory.glob('*_offset_config.json'):
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                base_name = config.get('base_name', config_file.stem.replace('_offset_config', ''))
-                config_data = {
-                    'current_offset': config.get('current_offset'),
-                    'optimal_offset': config.get('optimal_offset'),
-                    'similarity': config.get('similarity'),
-                    'timestamp': config.get('timestamp'),
-                    'config_path': str(config_file)
-                }
-                offset_configs[base_name] = config_data
+    config_search_dirs = [directory / 'alignment_configs', directory]
+    for search_dir in config_search_dirs:
+        if not search_dir.exists():
+            continue
+        for config_file in search_dir.glob('*_offset_config.json'):
+            try:
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    base_name = config.get('base_name', config_file.stem.replace('_offset_config', ''))
+                    # Skip if already found (prefer alignment_configs/ over root)
+                    if base_name in offset_configs:
+                        continue
+                    # Check if alignment cache exists (same dir as config)
+                    cache_path = str(config_file).replace('_offset_config.json', '_alignment_cache.json.gz')
+                    config_data = {
+                        'current_offset': config.get('current_offset'),
+                        'optimal_offset': config.get('optimal_offset'),
+                        'similarity': config.get('similarity'),
+                        'timestamp': config.get('timestamp'),
+                        'config_path': str(config_file),
+                        'method': config.get('method'),
+                        'save_source': config.get('save_source', 'unknown'),
+                        'parameters': config.get('parameters', {}),
+                        'files': config.get('files', {}),
+                        'has_cache': os.path.exists(cache_path),
+                    }
+                    offset_configs[base_name] = config_data
 
-                # Also try to extract VRS name from the config's file paths
-                files_info = config.get('files', {})
-                vrs_file = files_info.get('vrs_file')
-                if vrs_file:
-                    vrs_base = Path(vrs_file).stem
-                    offset_configs_by_vrs[vrs_base] = config_data
-        except:
-            pass
+                    # Also try to extract VRS name from the config's file paths
+                    files_info = config.get('files', {})
+                    vrs_file = files_info.get('vrs_file')
+                    if vrs_file:
+                        vrs_base = Path(vrs_file).stem
+                        offset_configs_by_vrs[vrs_base] = config_data
+            except:
+                pass
 
     # Helper function to find offset config for a base name
     def find_offset_config(base_name):
@@ -1195,6 +1522,7 @@ def scan_data_directory(directory):
                 'mps_folder': None,
                 'has_hand_tracking': False,
                 'size_mb': 0,
+                'duration_s': None,
                 'offset_config': find_offset_config(base_name)
             }
 
@@ -1204,21 +1532,46 @@ def scan_data_directory(directory):
         json_file = vrs_file.with_suffix('.vrs.json')
         if json_file.exists():
             data_groups[base_name]['vrs_json'] = str(json_file)
+            try:
+                with open(json_file, 'r') as jf:
+                    vrs_meta = json.load(jf)
+                    st = vrs_meta.get('start_time')
+                    et = vrs_meta.get('end_time')
+                    if st is not None and et is not None:
+                        data_groups[base_name]['duration_s'] = et - st
+            except Exception:
+                pass
 
-    # Scan for CSV files
+    # Scan for CSV files (skip segments and alignment cache files)
     for csv_file in directory.glob('*.csv'):
         csv_name = csv_file.stem.lower()
+        # Skip generated files: segments CSV, offset config, alignment cache
+        if csv_name.endswith('_segments') or '_segments.' in csv_file.name.lower():
+            continue
+        if '_offset_config' in csv_name or '_alignment_cache' in csv_name:
+            continue
         matched = False
 
-        for base_name in list(data_groups.keys()):
-            if base_name.lower().replace('_', '') in csv_name.replace('_', ''):
-                data_groups[base_name]['csv_files'].append({
-                    'path': str(csv_file),
-                    'name': csv_file.name,
-                    'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2)
-                })
-                matched = True
-                break
+        # Sort by name length descending so longer names match first
+        # e.g. "Half_coke1" matches before "Half_coke"
+        sorted_keys = sorted(data_groups.keys(), key=lambda k: len(k), reverse=True)
+        for base_name in sorted_keys:
+            # CSV pattern: {base_name}_{timestamp}.csv
+            # Match base_name at start, followed by '_' + digits (timestamp)
+            bn = base_name.lower()
+            if csv_name == bn or csv_name.startswith(bn + '_'):
+                # Ensure we don't match "half_coke_" against "half_coke1_"
+                # After removing base_name prefix + '_', remaining should start with digit (date)
+                remainder = csv_name[len(bn):]
+                if remainder == '' or (remainder.startswith('_') and len(remainder) > 1 and remainder[1:2].isdigit()):
+                    data_groups[base_name]['csv_files'].append({
+                        'path': str(csv_file),
+                        'name': csv_file.name,
+                        'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2),
+                        'duration_s': _get_csv_duration(csv_file)
+                    })
+                    matched = True
+                    break
 
         if not matched:
             csv_base = csv_file.stem
@@ -1231,20 +1584,23 @@ def scan_data_directory(directory):
                     'mps_folder': None,
                     'has_hand_tracking': False,
                     'size_mb': 0,
+                    'duration_s': None,
                     'offset_config': find_offset_config(csv_base)
                 }
             data_groups[csv_base]['csv_files'].append({
                 'path': str(csv_file),
                 'name': csv_file.name,
-                'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2)
+                'size_mb': round(csv_file.stat().st_size / (1024 * 1024), 2),
+                'duration_s': _get_csv_duration(csv_file)
             })
 
-    # Scan for MPS folders
+    # Scan for MPS folders — use exact match mps_{base_name}_vrs
     for mps_folder in directory.glob('mps_*'):
         if mps_folder.is_dir():
-            mps_name = mps_folder.name
+            mps_name = mps_folder.name.lower()
             for base_name in data_groups:
-                if base_name.lower() in mps_name.lower():
+                expected = f'mps_{base_name.lower()}_vrs'
+                if mps_name == expected:
                     data_groups[base_name]['mps_folder'] = str(mps_folder)
                     hand_tracking_file = mps_folder / 'hand_tracking' / 'hand_tracking_results.csv'
                     if hand_tracking_file.exists():
@@ -1345,6 +1701,7 @@ def save_offset():
     optimal_offset = data.get('optimal_offset')
     similarity = data.get('similarity')
     method = data.get('method')
+    save_source = data.get('save_source', 'manual')
     parameters = data.get('parameters', {})
 
     # Determine save directory based on available paths
@@ -1378,6 +1735,7 @@ def save_offset():
             'optimal_offset': optimal_offset,
             'similarity': similarity,
             'method': method,
+            'save_source': save_source,
             'parameters': parameters,
             'files': {
                 'haptic_csv': haptic_path,
@@ -1386,8 +1744,9 @@ def save_offset():
             }
         }
 
+        config_dir = _get_config_dir(save_dir)
         config_filename = f"{base_name}_offset_config.json"
-        config_path = os.path.join(save_dir, config_filename)
+        config_path = os.path.join(config_dir, config_filename)
 
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
@@ -1618,6 +1977,124 @@ def gripper_data():
         return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
 
 
+@app.route('/gripper_data_from_path', methods=['POST'])
+def gripper_data_from_path():
+    """Load gripper data from server file paths (no upload needed)"""
+    try:
+        data = request.get_json()
+        mps_folder_path = data.get('mps_folder_path')  # e.g. /mnt/zyl/data/IROS_data/20260110/mps_Jelly_1_vrs
+        haptic_path = data.get('haptic_path')  # e.g. /mnt/zyl/data/IROS_data/20260110/jelly_1_xxx.csv
+        vrs_path = data.get('vrs_path')  # e.g. /mnt/zyl/data/IROS_data/20260110/Jelly_1.vrs
+        urdf_path = data.get('urdf_path')  # e.g. /path/to/SO101_URDF_Assets/so101_new_calib.urdf
+        stl_dir_path = data.get('stl_dir_path')  # e.g. /path/to/SO101_URDF_Assets
+
+        hand_landmarks_data = None
+        slam_trajectory = None
+        world_coordinates = False
+        haptic_data_result = None
+        urdf_data = None
+        stl_urls = []
+        stl_filenames = []
+        stl_file_map = {}
+
+        # Load MPS folder data
+        if mps_folder_path and os.path.isdir(mps_folder_path):
+            try:
+                from app.utils.mps_folder_loader import load_mps_folder
+                mps_data = load_mps_folder(mps_folder_path)
+                if mps_data.get('hand_landmarks'):
+                    hand_landmarks_data = mps_data['hand_landmarks']
+                    world_coordinates = mps_data.get('world_coordinates', False)
+                if mps_data.get('slam_data'):
+                    slam_trajectory = {
+                        'positions': mps_data['slam_data']['positions'].tolist(),
+                        'timestamps': (mps_data['slam_data']['timestamps_us'] / 1e6).tolist()
+                    }
+                print(f"MPS folder loaded: hand={hand_landmarks_data is not None}, slam={slam_trajectory is not None}")
+            except Exception as e:
+                import traceback
+                print(f"Warning: Failed to load MPS folder: {e}")
+                print(traceback.format_exc())
+
+        # Load haptic data
+        if haptic_path and os.path.isfile(haptic_path):
+            try:
+                from app.utils.haptic_loader import load_haptic_data
+                haptic_data_result = load_haptic_data(haptic_path)
+                print(f"Haptic data loaded: {len(haptic_data_result.get('timestamps', []))} samples")
+            except Exception as e:
+                print(f"Warning: Failed to load haptic data: {e}")
+
+        # Parse URDF file
+        if urdf_path and os.path.isfile(urdf_path):
+            try:
+                urdf_data = parse_urdf(urdf_path)
+                print(f"Parsed URDF: {len(urdf_data['links'])} links, {len(urdf_data['joints'])} joints")
+            except Exception as e:
+                return jsonify({'error': f'Failed to parse URDF file: {str(e)}'}), 400
+
+        # Serve STL files from directory
+        if stl_dir_path and os.path.isdir(stl_dir_path):
+            for stl_file in sorted(os.listdir(stl_dir_path)):
+                if stl_file.lower().endswith('.stl'):
+                    stl_filenames.append(stl_file)
+                    stl_url = f'/gripper/server_stl?path={os.path.join(stl_dir_path, stl_file)}'
+                    stl_urls.append(stl_url)
+                    stl_file_map[stl_file] = stl_url
+
+        # Auto-load IK chain if URDF is provided
+        ik_loaded = False
+        if urdf_path and os.path.isfile(urdf_path) and IKPY_AVAILABLE:
+            try:
+                load_ik_chain(urdf_path, 'base_link', 'gripper_frame_link')
+                ik_loaded = True
+            except Exception as e:
+                print(f"Warning: Failed to auto-load IK chain: {e}")
+
+        result = {
+            'hand_landmarks': hand_landmarks_data,
+            'haptic_data': haptic_data_result,
+            'stl_files': stl_filenames,
+            'stl_urls': stl_urls,
+            'stl_file_map': stl_file_map,
+            'ik_available': IKPY_AVAILABLE,
+            'ik_loaded': ik_loaded,
+            'world_coordinates': world_coordinates,
+            'slam_trajectory': slam_trajectory,
+            'vrs_path': vrs_path  # Pass through for VRS init
+        }
+
+        if urdf_data:
+            result['urdf'] = urdf_data
+            result['urdf_filename'] = os.path.basename(urdf_path)
+            result['urdf_path'] = urdf_path
+
+        if ik_loaded:
+            result['ik_joint_names'] = ik_joint_names
+            result['ik_active_indices'] = ik_active_indices
+
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        stack_trace = traceback.format_exc()
+        print(f"Error: {error_msg}\n{stack_trace}")
+        return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@app.route('/gripper/server_stl')
+def server_stl():
+    """Serve STL files from server paths"""
+    stl_path = request.args.get('path', '')
+    if not stl_path or not os.path.isfile(stl_path):
+        return jsonify({'error': 'STL file not found'}), 404
+    # Security check: only allow STL files
+    if not stl_path.lower().endswith('.stl'):
+        return jsonify({'error': 'Not an STL file'}), 400
+    return send_file(stl_path, mimetype='application/octet-stream')
+
+
 @app.route('/uploaded_stl/<filename>')
 @app.route('/gripper/uploaded_stl/<filename>')  # Also support new route format
 def uploaded_stl(filename):
@@ -1652,6 +2129,32 @@ _vrs_cameras = []
 _vrs_time_range_ns = [0, 0]
 _vrs_num_frames = 0
 _vrs_rgb_stream_id = None
+
+# Global AriaSession cache for hand landmark projection
+_aria_session = None
+_aria_session_vrs_path = None
+_aria_session_mps_dir = None
+_aria_rgb_h_orig = None  # cached original RGB image height for rotation compensation
+
+
+def _get_or_create_aria_session(vrs_path, mps_dir):
+    """Get or create AriaSession for hand landmark projection"""
+    global _aria_session, _aria_session_vrs_path, _aria_session_mps_dir
+    if (_aria_session is not None and
+        _aria_session_vrs_path == vrs_path and
+        _aria_session_mps_dir == mps_dir):
+        return _aria_session
+    try:
+        from aria_api import AriaSession
+        _aria_session = AriaSession.from_vrs(vrs_path, mps_dir)
+        _aria_session_vrs_path = vrs_path
+        _aria_session_mps_dir = mps_dir
+        print(f"[AriaSession] Created for {vrs_path}, mps_dir={mps_dir}")
+        return _aria_session
+    except Exception as e:
+        print(f"[AriaSession] Failed to create: {e}")
+        _aria_session = None
+        return None
 
 
 @app.route('/gripper/init_vrs', methods=['POST'])
@@ -1768,6 +2271,10 @@ def get_video_frame():
         frame_index = request.args.get('frame_index', type=int)
         timestamp_s = request.args.get('timestamp', type=float)
         camera = request.args.get('camera', 'camera-rgb')
+        # Hand skeleton overlay params (optional)
+        show_skeleton = request.args.get('skeleton', '1')  # '1' = on, '0' = off
+        vrs_path_param = request.args.get('vrs_path', '')
+        mps_dir_param = request.args.get('mps_dir', '')
 
         # Use cached RGB stream if available
         stream_id = _vrs_rgb_stream_id
@@ -1847,6 +2354,72 @@ def get_video_frame():
         # Convert to numpy array
         image_array = image_data.to_numpy_array()
 
+        # Draw hand skeleton overlay on the raw image (before rotation)
+        if show_skeleton == '1' and vrs_path_param and mps_dir_param and os.path.isdir(mps_dir_param):
+            try:
+                import cv2
+                import numpy as np
+                session = _get_or_create_aria_session(vrs_path_param, mps_dir_param)
+                if session is not None:
+                    hands = session.project_hands(
+                        frame_timestamp_ns, "camera-rgb",
+                        confidence_threshold=0.3,
+                        max_slop_ns=int(500e6)
+                    )
+                    # Draw on a copy of the image array
+                    draw_img = image_array.copy()
+                    if len(draw_img.shape) == 2:
+                        draw_img = cv2.cvtColor(draw_img, cv2.COLOR_GRAY2BGR)
+                    elif draw_img.shape[2] == 1:
+                        draw_img = cv2.cvtColor(draw_img[:, :, 0], cv2.COLOR_GRAY2BGR)
+                    elif draw_img.shape[2] == 3:
+                        draw_img = cv2.cvtColor(draw_img, cv2.COLOR_RGB2BGR)
+
+                    _HAND_CONNECTIONS = {
+                        'wrist_palm': {'conn': [(5, 20)], 'cl': (255, 255, 255), 'cr': (200, 200, 200)},
+                        'thumb':  {'conn': [(5, 6), (6, 7), (7, 0)], 'cl': (0, 0, 255), 'cr': (0, 0, 200)},
+                        'index':  {'conn': [(5, 8), (8, 9), (9, 10), (10, 1)], 'cl': (0, 165, 255), 'cr': (0, 120, 200)},
+                        'middle': {'conn': [(5, 11), (11, 12), (12, 13), (13, 2)], 'cl': (0, 255, 255), 'cr': (0, 200, 200)},
+                        'ring':   {'conn': [(5, 14), (14, 15), (15, 16), (16, 3)], 'cl': (0, 255, 0), 'cr': (0, 200, 0)},
+                        'pinky':  {'conn': [(5, 17), (17, 18), (18, 19), (19, 4)], 'cl': (255, 0, 0), 'cr': (200, 0, 0)},
+                        'palm':   {'conn': [(8, 20), (11, 20), (14, 20), (17, 20)], 'cl': (128, 0, 128), 'cr': (100, 0, 100)},
+                    }
+
+                    for side_key, is_left in [('left', True), ('right', False)]:
+                        hand_data = hands.get(side_key)
+                        if hand_data is None:
+                            continue
+                        coords, valid = hand_data  # (21,2), (21,)
+                        if valid is None or not np.any(valid):
+                            continue
+                        # Draw connections
+                        for finfo in _HAND_CONNECTIONS.values():
+                            color = finfo['cl'] if is_left else finfo['cr']
+                            for si, ei in finfo['conn']:
+                                if si < len(coords) and ei < len(coords) and valid[si] and valid[ei]:
+                                    p1 = (int(round(coords[si][0])), int(round(coords[si][1])))
+                                    p2 = (int(round(coords[ei][0])), int(round(coords[ei][1])))
+                                    cv2.line(draw_img, p1, p2, color, 2, cv2.LINE_AA)
+                        # Draw keypoints
+                        for i in range(len(coords)):
+                            if not valid[i]:
+                                continue
+                            c = (int(round(coords[i][0])), int(round(coords[i][1])))
+                            r = 6 if i == 5 else 4
+                            cv2.circle(draw_img, c, r, (255, 255, 255), -1, cv2.LINE_AA)
+                            cv2.circle(draw_img, c, r, (0, 0, 0), 1, cv2.LINE_AA)
+                            if i == 5:
+                                lbl = "L" if is_left else "R"
+                                cv2.putText(draw_img, lbl, (c[0] + 8, c[1]),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                                cv2.putText(draw_img, lbl, (c[0] + 8, c[1]),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+
+                    # Convert back to RGB for PIL
+                    image_array = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
+            except Exception as e:
+                print(f"[video_frame] Skeleton drawing error (non-fatal): {e}")
+
         # Handle grayscale or RGB
         if len(image_array.shape) == 2:
             img = Image.fromarray(image_array, mode='L')
@@ -1894,6 +2467,116 @@ def vrs_status():
         'vrs_path': _vrs_path,
         'cameras': _vrs_cameras
     })
+
+
+@app.route('/api/hand_landmarks', methods=['GET'])
+def get_hand_landmarks():
+    """Get projected hand landmarks for a given VRS frame timestamp"""
+    import numpy as np
+
+    timestamp_ns = request.args.get('timestamp_ns', type=int)
+    vrs_path = request.args.get('vrs_path')
+    mps_dir = request.args.get('mps_dir')
+
+    if timestamp_ns is None or not vrs_path or not mps_dir:
+        return jsonify({'error': 'Missing required parameters: timestamp_ns, vrs_path, mps_dir'}), 400
+
+    if not os.path.exists(vrs_path):
+        return jsonify({'error': f'VRS file not found: {vrs_path}'}), 404
+    if not os.path.isdir(mps_dir):
+        return jsonify({'error': f'MPS directory not found: {mps_dir}'}), 404
+
+    session = _get_or_create_aria_session(vrs_path, mps_dir)
+    if session is None:
+        return jsonify({'error': 'Failed to create AriaSession'}), 500
+
+    try:
+        hands = session.project_hands(
+            timestamp_ns,
+            "camera-rgb",
+            confidence_threshold=0.3,
+            max_slop_ns=int(500e6)  # 500ms tolerance for ~10Hz hand tracking
+        )
+
+        # The video_frame endpoint rotates image by -90° (clockwise 90°).
+        # Original image shape: (H_orig, W_orig). After rotation: (W_orig, H_orig).
+        # For the coordinate transform:
+        #   u_rotated = H_orig - 1 - v_orig
+        #   v_rotated = u_orig
+        # We need the original image dimensions. Get from VRS provider.
+        # The video_frame endpoint returns width=image_array.shape[1] (W_orig),
+        # height=image_array.shape[0] (H_orig) BEFORE rotation.
+        # We can get these from the VRS provider directly.
+        global _aria_rgb_h_orig
+        H_orig = _aria_rgb_h_orig
+        if H_orig is None and _vrs_provider is not None and _vrs_rgb_stream_id is not None:
+            try:
+                test_result = _vrs_provider.get_image_data_by_index(_vrs_rgb_stream_id, 0)
+                if test_result and len(test_result) >= 2:
+                    arr = test_result[0].to_numpy_array()
+                    H_orig = arr.shape[0]
+                    _aria_rgb_h_orig = H_orig
+            except:
+                pass
+
+        # If VRS provider not yet initialized, open it briefly to get dimensions
+        if H_orig is None:
+            try:
+                tmp_provider = vrs_data_provider_module.create_vrs_data_provider(vrs_path)
+                for sid in tmp_provider.get_all_streams():
+                    label = tmp_provider.get_label_from_stream_id(sid)
+                    if 'rgb' in label.lower():
+                        r = tmp_provider.get_image_data_by_index(sid, 0)
+                        if r and len(r) >= 2:
+                            H_orig = r[0].to_numpy_array().shape[0]
+                            _aria_rgb_h_orig = H_orig
+                        break
+            except:
+                pass
+
+        result = {'left': None, 'right': None, 'timestamp_ns': timestamp_ns}
+
+        for side in ['left', 'right']:
+            hand_data = hands.get(side)
+            if hand_data is None:
+                continue
+            pixel_coords, valid_mask = hand_data  # (21,2), (21,)
+
+            landmarks = []
+            valids = []
+            for i in range(len(pixel_coords)):
+                u_orig, v_orig = float(pixel_coords[i][0]), float(pixel_coords[i][1])
+                is_valid = bool(valid_mask[i]) if valid_mask is not None else True
+
+                # Mark NaN coordinates as invalid
+                if np.isnan(u_orig) or np.isnan(v_orig):
+                    is_valid = False
+                    u_orig = 0.0
+                    v_orig = 0.0
+
+                # Apply rotation compensation (-90° = clockwise 90°)
+                if H_orig is not None:
+                    u_rot = H_orig - 1 - v_orig
+                    v_rot = u_orig
+                else:
+                    u_rot = u_orig
+                    v_rot = v_orig
+
+                landmarks.append([u_rot, v_rot])
+                valids.append(is_valid)
+
+            result[side] = {
+                'landmarks': landmarks,
+                'valid': valids
+            }
+
+        return jsonify(result)
+
+    except Exception as e:
+        import traceback
+        print(f"[hand_landmarks] Error: {e}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
 
 
 # ==================== IK Service ====================

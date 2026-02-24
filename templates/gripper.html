@@ -6,7 +6,7 @@
     <!-- Note: CSP warnings may come from browser extensions, not our code -->
     <!-- Our code uses function-based setTimeout/setInterval, not string-based eval -->
     <title>夹爪可视化 - Aria-Haptic Alignment Tool</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=12">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- OrbitControls: 鼠标控制相机（缩放、旋转、平移） -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -383,13 +383,21 @@
                 <h1><span>🤖</span> 夹爪可视化工具</h1>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
-                    <a href="/player" class="nav-link">
-                        <span>🎬</span>
-                        <span>数据播放器</span>
+                    <a href="/" class="nav-link-btn">
+                        <span>🎯</span>
+                        <span data-i18n="nav.alignment">对齐工具</span>
                     </a>
-                    <a href="/" class="nav-link">
-                        <span>&larr;</span>
-                        <span>返回对齐工具</span>
+                    <a href="/visualize" class="nav-link-btn">
+                        <span>📊</span>
+                        <span data-i18n="nav.visualize">数据可视化</span>
+                    </a>
+                    <a href="/player" class="nav-link-btn">
+                        <span>🎬</span>
+                        <span data-i18n="nav.player">数据播放器</span>
+                    </a>
+                    <a href="/data" class="nav-link-btn">
+                        <span>📂</span>
+                        <span data-i18n="nav.data_manager">数据管理</span>
                     </a>
                 </div>
             </div>
@@ -397,68 +405,48 @@
         </header>
 
         <div class="main-content">
-            <!-- Upload Section -->
+            <!-- Server File Selection Section -->
             <section class="upload-section">
-                <h2><span>📁</span> 上传文件</h2>
+                <h2><span>📁</span> 选择服务器数据</h2>
 
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <!-- MPS Folder select (highest priority) -->
-                    <div style="margin-bottom: 12px; padding: 10px 15px; background: #e3f2fd; border-radius: 6px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                        <label for="mps_folder" style="padding: 6px 14px; background: #1976d2; color: white; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px;">
-                            📂 MPS 文件夹
-                            <input type="file" id="mps_folder" webkitdirectory directory multiple style="display: none;">
-                        </label>
-                        <span id="mps-folder-info" style="color: #1565c0; font-size: 0.85rem;">自动加载 SLAM + 手部追踪（世界坐标系）</span>
-                    </div>
-
-                    <!-- Quick folder select -->
-                    <div style="margin-bottom: 12px; padding: 10px 15px; background: #e8f5e9; border-radius: 6px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-                        <label for="auto_folder" style="padding: 6px 14px; background: #4caf50; color: white; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px;">
-                            📁 一键选择文件夹
-                            <input type="file" id="auto_folder" webkitdirectory directory multiple style="display: none;">
-                        </label>
-                        <span style="color: #2e7d32; font-size: 0.85rem;">自动识别 CSV、URDF、STL 文件</span>
-                    </div>
-
-                    <!-- File inputs in grid -->
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 12px;">
-                        <!-- MPS File -->
-                        <div style="padding: 10px; background: #f8f9fa; border-radius: 6px;">
-                            <label for="mps_file" style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">MPS CSV（手部数据）:</label>
-                            <input type="file" id="mps_file" name="mps_file" accept=".csv" style="font-size: 0.8rem; width: 100%;">
-                            <span class="file-info" id="mps-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px;">未选择</span>
+                <form id="uploadForm">
+                    <!-- Directory and Data Group Selection -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 12px;">
+                        <!-- Directory Selection -->
+                        <div style="padding: 10px; background: #e3f2fd; border-radius: 6px;">
+                            <label for="dir-select" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 6px; color: #1565c0;">数据目录:</label>
+                            <select id="dir-select" style="width: 100%; padding: 6px 10px; border: 1px solid #90caf9; border-radius: 4px; font-size: 0.85rem;">
+                                <option value="">加载中...</option>
+                            </select>
                         </div>
-                        <!-- Haptic File -->
-                        <div style="padding: 10px; background: #fff3e0; border-radius: 6px;">
-                            <label for="haptic_file" style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">触觉 CSV（力传感器）:</label>
-                            <input type="file" id="haptic_file" name="haptic_file" accept=".csv" style="font-size: 0.8rem; width: 100%;">
-                            <span class="file-info" id="haptic-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px;">未选择</span>
-                        </div>
-                        <!-- URDF File -->
-                        <div style="padding: 10px; background: #f8f9fa; border-radius: 6px;">
-                            <label for="urdf_file" style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">URDF 文件:</label>
-                            <input type="file" id="urdf_file" name="urdf_file" accept=".urdf,.xml" style="font-size: 0.8rem; width: 100%;">
-                            <span class="file-info" id="urdf-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px;">未选择</span>
-                        </div>
-                        <!-- STL Files -->
-                        <div style="padding: 10px; background: #f8f9fa; border-radius: 6px;">
-                            <label style="font-size: 0.85rem; font-weight: 500; display: block; margin-bottom: 6px;">STL 文件（夹爪）:</label>
-                            <div style="display: flex; gap: 6px;">
-                                <label for="stl_folder" style="padding: 4px 10px; background: #667eea; color: white; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">
-                                    📁 文件夹
-                                    <input type="file" id="stl_folder" webkitdirectory directory multiple style="display: none;" accept=".stl">
-                                </label>
-                                <label for="stl_files" style="padding: 4px 10px; background: #6c757d; color: white; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">
-                                    📄 多选
-                                    <input type="file" id="stl_files" name="stl_files" accept=".stl" multiple style="display: none;">
-                                </label>
-                            </div>
-                            <span class="file-info" id="stl-file-info" style="font-size: 0.75rem; color: #6c757d; display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">未选择</span>
+                        <!-- Data Group Selection -->
+                        <div style="padding: 10px; background: #e8f5e9; border-radius: 6px;">
+                            <label for="group-select" style="font-size: 0.85rem; font-weight: 600; display: block; margin-bottom: 6px; color: #2e7d32;">数据组:</label>
+                            <select id="group-select" style="width: 100%; padding: 6px 10px; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 0.85rem;" disabled>
+                                <option value="">请先选择目录</option>
+                            </select>
                         </div>
                     </div>
 
-                    <!-- STL file list (collapsible) -->
-                    <div id="stl-file-list" style="font-size: 0.8rem; color: #6c757d; max-height: 60px; overflow-y: auto; display: none; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; margin-bottom: 12px; padding: 8px; background: #f8f9fa; border-radius: 4px;"></div>
+                    <!-- File Details (auto-filled from data group) -->
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px;">
+                        <div style="padding: 8px; background: #f8f9fa; border-radius: 6px;">
+                            <span style="font-size: 0.8rem; font-weight: 500; color: #555;">MPS 文件夹:</span>
+                            <div id="mps-folder-info" style="font-size: 0.75rem; color: #6c757d; margin-top: 4px; word-break: break-all;">未选择</div>
+                        </div>
+                        <div style="padding: 8px; background: #fff3e0; border-radius: 6px;">
+                            <span style="font-size: 0.8rem; font-weight: 500; color: #555;">触觉 CSV:</span>
+                            <div id="haptic-file-info" style="font-size: 0.75rem; color: #6c757d; margin-top: 4px; word-break: break-all;">未选择</div>
+                        </div>
+                        <div style="padding: 8px; background: #f8f9fa; border-radius: 6px;">
+                            <span style="font-size: 0.8rem; font-weight: 500; color: #555;">VRS 文件:</span>
+                            <div id="vrs-file-info" style="font-size: 0.75rem; color: #6c757d; margin-top: 4px; word-break: break-all;">未选择</div>
+                        </div>
+                        <div style="padding: 8px; background: #e8eaf6; border-radius: 6px;">
+                            <span style="font-size: 0.8rem; font-weight: 500; color: #555;">URDF + STL:</span>
+                            <div id="urdf-file-info" style="font-size: 0.75rem; color: #28a745; margin-top: 4px;">SO101 (自动加载)</div>
+                        </div>
+                    </div>
 
                     <div style="display: flex; align-items: flex-start; gap: 15px;">
                         <div style="display: flex; flex-direction: column; gap: 8px;">
@@ -466,11 +454,10 @@
                                 <span class="btn-icon">📈</span>
                                 <span>加载并可视化</span>
                             </button>
-                            <a href="https://github.com/TheRobotStudio/SO-ARM100" target="_blank" style="font-size: 0.8rem; color: #667eea;">STL 文件来源: SO-ARM100</a>
                         </div>
                         <!-- File Load Status Box -->
                         <div id="file-status-box" style="flex: 1; padding: 10px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.75rem; font-family: monospace; max-height: 100px; overflow-y: auto;">
-                            <div style="color: #6c757d;">等待加载文件...</div>
+                            <div style="color: #6c757d;">请选择数据目录和数据组...</div>
                         </div>
                     </div>
                 </form>
@@ -589,11 +576,7 @@
                             </div>
                         </div>
                         <div style="margin-top: 6px; display: flex; gap: 6px; align-items: center;">
-                            <label for="vrs_file" style="padding: 4px 8px; background: #667eea; color: white; border-radius: 4px; cursor: pointer; font-size: 0.7rem; white-space: nowrap;">
-                                选择 VRS
-                                <input type="file" id="vrs_file" accept=".vrs" style="display: none;">
-                            </label>
-                            <span id="vrs-file-info" style="font-size: 0.65rem; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">未选择</span>
+                            <span id="vrs-panel-info" style="font-size: 0.65rem; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">VRS 通过数据组自动加载</span>
                         </div>
                     </div>
                 </div>
@@ -668,9 +651,13 @@
                         <div id="hand-pose-panel" style="padding: 10px; background: #f0f4f8; border-radius: 6px; margin-bottom: 12px;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                                 <label style="font-weight: 600; font-size: 0.85rem;">✋ 手部姿态 <span id="hand-pose-mode-label" style="font-weight: normal; color: #666;">(设备坐标)</span>:</label>
-                                <div style="display: flex; gap: 4px;">
-                                    <button id="hand-pose-save-btn" style="padding: 2px 8px; background: #4caf50; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">存</button>
-                                    <button id="hand-pose-load-btn" style="padding: 2px 8px; background: #2196f3; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">读</button>
+                                <div style="display: flex; gap: 4px; align-items: center;">
+                                    <button id="hand-pose-save-btn" style="padding: 2px 8px; background: #4caf50; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;" title="保存当前姿态（按数据组+日期）">存</button>
+                                    <select id="hand-pose-load-select" style="padding: 2px 4px; border: 1px solid #ccc; border-radius: 3px; font-size: 0.7rem; max-width: 200px;">
+                                        <option value="">-- 已保存的姿态 --</option>
+                                    </select>
+                                    <button id="hand-pose-load-btn" style="padding: 2px 8px; background: #2196f3; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;" title="加载选中的姿态">读</button>
+                                    <button id="hand-pose-delete-btn" style="padding: 2px 8px; background: #f44336; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;" title="删除选中的姿态">删</button>
                                     <button id="hand-pose-reset-btn" style="padding: 2px 8px; background: #ff9800; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.75rem;">重置</button>
                                 </div>
                             </div>
@@ -873,9 +860,9 @@
         </footer>
     </div>
 
-    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=11"></script>
     <!-- Gripper visualization (non-module for THREE.js compatibility) -->
-    <script src="{{ url_for('static', filename='js/gripper/gripper.js') }}?v=42"></script>
+    <script src="{{ url_for('static', filename='js/gripper/gripper.js') }}?v=53"></script>
 </body>
 </html>
 

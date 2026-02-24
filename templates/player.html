@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>数据播放器 - Aria-Haptic Alignment Tool</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=12">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <!-- Libraries for GIF recording -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -339,9 +339,21 @@
                 <h1><span>🎬</span> <span data-i18n="player.title">对齐数据播放器</span></h1>
                 <div style="display: flex; gap: 10px; align-items: center;">
                     <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
-                    <a href="/" class="nav-link">
-                        <span>&larr;</span>
-                        <span data-i18n="player.nav.back">返回对齐工具</span>
+                    <a href="/" class="nav-link-btn">
+                        <span>🎯</span>
+                        <span data-i18n="nav.alignment">对齐工具</span>
+                    </a>
+                    <a href="/visualize" class="nav-link-btn">
+                        <span>📊</span>
+                        <span data-i18n="nav.visualize">数据可视化</span>
+                    </a>
+                    <a href="/gripper" class="nav-link-btn">
+                        <span>🤖</span>
+                        <span data-i18n="nav.gripper">夹爪可视化</span>
+                    </a>
+                    <a href="/data" class="nav-link-btn">
+                        <span>📂</span>
+                        <span data-i18n="nav.data_manager">数据管理</span>
                     </a>
                 </div>
             </div>
@@ -641,7 +653,7 @@
     </div>
 
     <!-- Load i18n first, then player.js -->
-    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=11"></script>
     <script src="{{ url_for('static', filename='js/player.js') }}"></script>
 </body>
 </html>

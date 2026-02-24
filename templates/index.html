@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aria-Haptic Alignment Tool</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=14">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
@@ -13,20 +13,21 @@
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
                 <h1 data-i18n="app.title">🎯 Aria-Haptic 时间对齐工具</h1>
                 <div style="display: flex; gap: 10px; align-items: center;">
+                    <button id="theme-toggle" class="btn-theme" aria-label="Toggle theme">🌙</button>
                     <button id="language-toggle" class="btn-language" aria-label="Switch language">English</button>
-                    <a href="/visualize" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
+                    <a href="/visualize" class="nav-link-btn">
                         <span>📊</span>
                         <span data-i18n="nav.visualize">数据可视化</span>
                     </a>
-                    <a href="/player" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
+                    <a href="/player" class="nav-link-btn">
                         <span>🎬</span>
                         <span data-i18n="nav.player">数据播放器</span>
                     </a>
-                    <a href="/gripper" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: white; color: #667eea; text-decoration: none; border-radius: 6px; border: 2px solid #667eea; font-weight: 600; transition: all 0.3s ease;">
+                    <a href="/gripper" class="nav-link-btn">
                         <span>🤖</span>
-                        <span>夹爪可视化</span>
+                        <span data-i18n="nav.gripper">夹爪可视化</span>
                     </a>
-                    <a href="/data" style="display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 6px; font-weight: 600; transition: all 0.3s ease;">
+                    <a href="/data" class="nav-link-btn">
                         <span>📂</span>
                         <span data-i18n="nav.data_manager">数据管理</span>
                     </a>
@@ -35,62 +36,103 @@
             <p class="subtitle" data-i18n="app.subtitle">对齐 Project Aria 手部追踪数据与触觉传感器数据</p>
         </header>
 
-        {% if not aria_api_available %}
-        <div class="warning-banner">
-            <h3 data-i18n="warning.aria_api.title">⚠️ aria_api 未安装</h3>
-            <p data-i18n="warning.aria_api.desc">VRS 文件处理功能不可用。如需完整功能，请安装 aria_api 库。</p>
-            <p><span data-i18n="warning.aria_api.install">安装方法：</span> <a href="https://github.com/306327680/Aria-Vrs-Mps-api" target="_blank">https://github.com/306327680/Aria-Vrs-Mps-api</a></p>
-        </div>
-        {% endif %}
-
-        <div class="main-content">
-            <!-- File Upload Section -->
-            <section class="upload-section">
-                <h2><span>📁</span> <span data-i18n="upload.title">上传数据文件</span></h2>
-
-                <!-- Mode Selector -->
-                <div class="mode-selector">
-                    <label class="mode-option">
-                        <input type="radio" name="upload_mode" value="mps_csv" id="mode-mps-csv" checked>
-                        <span class="mode-label">
-                            <strong data-i18n="upload.mode.mps">MPS CSV 模式</strong>
-                            <small data-i18n="upload.mode.mps.desc">上传 MPS 生成的 hand_tracking_results.csv（推荐，无需 aria_api）</small>
-                        </span>
-                    </label>
-                    <label class="mode-option">
-                        <input type="radio" name="upload_mode" value="vrs" id="mode-vrs" {% if not aria_api_available %}disabled{% endif %}>
-                        <span class="mode-label">
-                            <strong data-i18n="upload.mode.vrs">VRS 模式</strong>
-                            <small data-i18n="upload.mode.vrs.desc">上传 VRS 文件（需要 aria_api，文件较大）</small>
-                            {% if not aria_api_available %}<span class="mode-disabled" data-i18n="upload.mode.vrs.disabled">（aria_api 未安装）</span>{% endif %}
-                        </span>
-                    </label>
-                </div>
-
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <div class="file-input-group">
-                        <!-- MPS CSV File Input -->
-                        <div class="file-input-wrapper" id="mps-file-wrapper">
-                            <label for="mps_file" data-i18n="upload.file.mps">MPS CSV 文件：</label>
-                            <input type="file" id="mps_file" name="mps_file" accept=".csv">
-                            <span class="file-info" id="mps-info" data-i18n="upload.file.none">未选择文件</span>
-                        </div>
-
-                        <!-- VRS File Input -->
-                        <div class="file-input-wrapper" id="vrs-file-wrapper" style="display: none;">
-                            <label for="vrs_file" data-i18n="upload.file.vrs">VRS 文件：</label>
-                            <input type="file" id="vrs_file" name="vrs_file" accept=".vrs">
-                            <span class="file-info" id="vrs-info" data-i18n="upload.file.none">未选择文件</span>
-                        </div>
-
-                        <!-- Haptic CSV File Input -->
-                        <div class="file-input-wrapper">
-                            <label for="haptic_file" data-i18n="upload.file.haptic">触觉 CSV 文件：</label>
-                            <input type="file" id="haptic_file" name="haptic_file" accept=".csv" required>
-                            <span class="file-info" id="haptic-info" data-i18n="upload.file.none">未选择文件</span>
+        <!-- Workflow Guide (collapsible) -->
+        <div id="workflow-guide" class="workflow-guide">
+            <div class="workflow-toggle" id="workflow-toggle">
+                <span class="workflow-toggle-icon">📋</span>
+                <span data-i18n="workflow.title">使用流程</span>
+                <span class="workflow-arrow" id="workflow-arrow">▼</span>
+            </div>
+            <div class="workflow-content" id="workflow-content">
+                <div class="workflow-steps">
+                    <!-- Step 1 -->
+                    <div class="workflow-step">
+                        <div class="workflow-step-number">1</div>
+                        <div class="workflow-step-body">
+                            <div class="workflow-step-title" data-i18n="workflow.step1.title">选择数据文件</div>
+                            <div class="workflow-step-desc" data-i18n="workflow.step1.desc">在「选择数据文件」中选择数据目录，系统自动识别 MPS CSV、触觉 CSV 和 VRS 文件</div>
                         </div>
                     </div>
-                </form>
+                    <div class="workflow-arrow-down">↓</div>
+                    <!-- Step 2 -->
+                    <div class="workflow-step">
+                        <div class="workflow-step-number">2</div>
+                        <div class="workflow-step-body">
+                            <div class="workflow-step-title" data-i18n="workflow.step2.title">运行对齐</div>
+                            <div class="workflow-step-desc" data-i18n="workflow.step2.desc">确认参数后点击「开始对齐分析」，系统计算 Aria 手部追踪与触觉数据的最优时间偏移</div>
+                        </div>
+                    </div>
+                    <div class="workflow-arrow-down">↓</div>
+                    <!-- Step 3 -->
+                    <div class="workflow-step">
+                        <div class="workflow-step-number">3</div>
+                        <div class="workflow-step-body">
+                            <div class="workflow-step-title" data-i18n="workflow.step3.title">微调偏移 & 检查视频</div>
+                            <div class="workflow-step-desc" data-i18n="workflow.step3.desc">拖动偏移滑条微调对齐；播放 RGB 视频确认对齐效果；满意后点击「保存偏移配置」</div>
+                        </div>
+                    </div>
+                    <div class="workflow-arrow-down">↓</div>
+                    <!-- Step 4 -->
+                    <div class="workflow-step">
+                        <div class="workflow-step-number">4</div>
+                        <div class="workflow-step-body">
+                            <div class="workflow-step-title" data-i18n="workflow.step4.title">编辑力度片段</div>
+                            <div class="workflow-step-desc" data-i18n="workflow.step4.desc">在图表中拖动片段边界调整起止时间；「+ 添加片段」手动新增；右键删除不需要的片段；完成后点「💾 保存片段」</div>
+                        </div>
+                    </div>
+                    <div class="workflow-arrow-down">↓</div>
+                    <!-- Step 5 -->
+                    <div class="workflow-step">
+                        <div class="workflow-step-number">5</div>
+                        <div class="workflow-step-body">
+                            <div class="workflow-step-title" data-i18n="workflow.step5.title">导出到 LeRobot</div>
+                            <div class="workflow-step-desc" data-i18n="workflow.step5.desc">在「导出到 LeRobot」面板设置输出目录和任务名，点击「运行转换」生成训练数据集</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="workflow-tip">
+                    <span>💡</span>
+                    <span data-i18n="workflow.tip">下次打开时，系统会自动检测已保存的对齐配置和片段，可直接加载无需重新计算</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <!-- Server File Browser Section -->
+            <section class="upload-section">
+                <h2><span>📂</span> 选择数据文件</h2>
+
+                <div style="display: flex; flex-direction: column; gap: 15px;">
+                    <!-- Directory Selector -->
+                    <div class="file-input-wrapper">
+                        <label for="dir-select">数据目录：</label>
+                        <select id="dir-select" style="width: 100%; padding: 8px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px;">
+                            <option value="">-- 加载中... --</option>
+                        </select>
+                    </div>
+
+                    <!-- File Selectors -->
+                    <div class="file-input-wrapper">
+                        <label for="mps-select">MPS CSV (hand_tracking)：</label>
+                        <select id="mps-select" style="width: 100%; padding: 8px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px;" disabled>
+                            <option value="">-- 请先选择目录 --</option>
+                        </select>
+                    </div>
+
+                    <div class="file-input-wrapper">
+                        <label for="haptic-select">触觉 CSV 文件：</label>
+                        <select id="haptic-select" style="width: 100%; padding: 8px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px;" disabled>
+                            <option value="">-- 请先选择目录 --</option>
+                        </select>
+                    </div>
+
+                    <div class="file-input-wrapper">
+                        <label for="vrs-select">VRS 文件（可选，用于视频播放）：</label>
+                        <select id="vrs-select" style="width: 100%; padding: 8px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px;" disabled>
+                            <option value="">-- 无 --</option>
+                        </select>
+                    </div>
+                </div>
             </section>
 
             <!-- Parameters Section -->
@@ -140,19 +182,34 @@
                         </label>
                         <span class="param-help" data-i18n="params.export_segments.help">自动识别力度片段并生成 CSV</span>
                     </div>
+
+                    <div class="param-group">
+                        <label for="view_window" data-i18n="params.view_window">显示窗口 (秒)：</label>
+                        <input type="number" id="view_window" name="view_window" value="30" min="10" max="9999" step="10">
+                        <span class="param-help" data-i18n="params.view_window.help">After Alignment 图表默认可见范围，用底部滑条导航全部数据</span>
+                    </div>
                 </div>
             </section>
 
-            <!-- Optional VRS Video Section -->
-            <section class="upload-section" style="margin-top: 20px; background: #f0f8ff; border: 1px dashed #667eea;">
-                <h2><span>🎬</span> VRS 视频播放 (可选)</h2>
-                <p style="color: #666; font-size: 0.9rem; margin-bottom: 15px;">上传 VRS 文件后可在对齐结果中同步播放 RGB 相机视频</p>
-                <div class="file-input-wrapper">
-                    <label for="vrs_video_file">VRS 视频文件：</label>
-                    <input type="file" id="vrs_video_file" name="vrs_video_file" accept=".vrs">
-                    <span class="file-info" id="vrs-video-info">未选择文件</span>
+            <!-- Saved Alignment Config Banner -->
+            <div id="saved-alignment-banner" style="display: none; margin: 0 0 10px 0; padding: 12px 20px; background: linear-gradient(135deg, #e8f5e9, #f1f8e9); border: 1px solid #a5d6a7; border-radius: 8px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.9rem; color: #2e7d32;" data-i18n="saved.found">
+                            检测到已有对齐配置
+                        </div>
+                        <div id="saved-alignment-info" style="font-size: 0.78rem; color: #558b2f; margin-top: 2px;"></div>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button id="load-cached-alignment-btn" style="padding: 8px 20px; border: none; background: linear-gradient(135deg, #1565c0, #42a5f5); color: white; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: all 0.2s; display: none;">
+                            <span data-i18n="saved.load_cached">直接加载结果</span>
+                        </button>
+                        <button id="load-saved-alignment-btn" style="padding: 8px 20px; border: none; background: linear-gradient(135deg, #43a047, #66bb6a); color: white; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: all 0.2s;">
+                            <span data-i18n="saved.recompute">重新计算对齐</span>
+                        </button>
+                    </div>
                 </div>
-            </section>
+            </div>
 
             <!-- Action Button -->
             <div class="action-section">
@@ -212,95 +269,103 @@
                     </div>
                 </div>
 
-                <!-- Interactive Offset Slider and Video Panel Side by Side -->
-                <div style="display: flex; gap: 20px; margin-bottom: 20px; align-items: stretch;">
-                    <!-- VRS Video Panel (shown when VRS is loaded) -->
-                    <div id="vrs-video-panel" style="display: none; flex: 0 0 280px; background: #1a1a1a; border-radius: 8px; padding: 12px;">
-                        <h4 style="color: #fff; margin: 0 0 8px 0; font-size: 0.85rem;">🎬 RGB 相机</h4>
-                        <div style="position: relative; background: #000; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
-                            <img id="vrs-video-frame" src="" alt="Video frame" style="width: 100%; height: auto; display: block; max-height: 400px; object-fit: contain;">
-                            <div id="vrs-video-loading" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 0.8rem; display: none;">加载中...</div>
+                <!-- Interactive Offset Slider (compact) -->
+                <div class="offset-slider-section">
+                    <h3 style="margin-top: 0;"><span>🎚️</span> <span data-i18n="interactive.title">交互式偏移调整</span></h3>
+                    <div class="slider-container" style="max-width: 100%;">
+                        <div class="slider-header">
+                            <div class="slider-label">
+                                <span data-i18n="interactive.current_offset">当前偏移</span>:
+                                <span id="current-offset" class="offset-value">0.000</span>s
+                            </div>
+                            <div class="slider-info">
+                                <span data-i18n="interactive.current_similarity">当前相似度</span>:
+                                <span id="current-similarity" class="similarity-value">-</span>
+                            </div>
                         </div>
-                        <div style="color: #aaa; font-size: 0.7rem; text-align: center; margin-bottom: 6px;">
+                        <input type="range"
+                               id="offset-slider"
+                               class="offset-slider"
+                               min="-10"
+                               max="20"
+                               step="0.01"
+                               value="0"
+                               style="width: 100%;">
+                        <div class="slider-marks">
+                            <span>-10s</span>
+                            <span id="max-offset-label">20s</span>
+                        </div>
+                        <div class="slider-buttons">
+                            <button id="apply-offset-btn" class="btn-primary" style="margin-right: 10px;">
+                                <span class="btn-icon">✓</span>
+                                <span data-i18n="interactive.apply">应用偏移</span>
+                            </button>
+                            <button id="reset-offset-btn" class="btn-reset" style="margin-right: 10px;">
+                                <span class="btn-icon">🔄</span>
+                                <span data-i18n="interactive.reset">重置到最优偏移</span>
+                            </button>
+                            <button id="save-offset-btn" class="btn-secondary">
+                                <span class="btn-icon">💾</span>
+                                <span>保存偏移配置</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- VRS RGB Camera Panel (separate card, shown when VRS is loaded) -->
+                <div id="vrs-video-panel" style="display: none;">
+                    <div class="vrs-video-header">
+                        <h4>🎬 RGB 相机</h4>
+                        <div class="vrs-video-time-info">
                             <span>VRS 时间: </span><span id="vrs-video-time">--</span>s
                             <span style="margin-left: 15px;">触觉时间: </span><span id="haptic-sync-time">--</span>s
                         </div>
-                        <!-- Playback Controls -->
-                        <div style="display: flex; gap: 6px; justify-content: center; align-items: center; flex-wrap: wrap;">
-                            <button id="video-play-btn" style="padding: 4px 10px; border: none; background: #667eea; color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">▶ 播放</button>
-                            <button id="video-stop-btn" style="padding: 4px 10px; border: none; background: #666; color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">⏹ 停止</button>
-                            <select id="video-speed" style="padding: 3px; border-radius: 4px; font-size: 0.7rem;">
-                                <option value="0.25">0.25x</option>
-                                <option value="0.5">0.5x</option>
-                                <option value="1" selected>1x</option>
-                                <option value="2">2x</option>
-                            </select>
-                        </div>
-                        <!-- Time Slider -->
-                        <div style="margin-top: 8px;">
-                            <input type="range" id="video-time-slider" min="0" max="100" value="0" step="0.1" style="width: 100%;">
-                        </div>
-                        <!-- Force Indicators (Horizontal) -->
-                        <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
-                            <!-- Thumb Force Bar -->
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="color: #aaa; font-size: 0.65rem; width: 28px;">拇指</span>
-                                <div style="flex: 1; height: 16px; background: #333; border-radius: 4px; position: relative; overflow: hidden;">
-                                    <div id="thumb-force-bar" style="position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: linear-gradient(to right, #4CAF50, #FFC107, #F44336); border-radius: 4px 0 0 4px; transition: width 0.1s;"></div>
-                                </div>
-                                <span id="thumb-force-value" style="color: #fff; font-size: 0.6rem; width: 40px; text-align: right;">0.0 N</span>
-                            </div>
-                            <!-- Index Force Bar -->
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span style="color: #aaa; font-size: 0.65rem; width: 28px;">食指</span>
-                                <div style="flex: 1; height: 16px; background: #333; border-radius: 4px; position: relative; overflow: hidden;">
-                                    <div id="index-force-bar" style="position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: linear-gradient(to right, #4CAF50, #FFC107, #F44336); border-radius: 4px 0 0 4px; transition: width 0.1s;"></div>
-                                </div>
-                                <span id="index-force-value" style="color: #fff; font-size: 0.6rem; width: 40px; text-align: right;">0.0 N</span>
-                            </div>
-                        </div>
                     </div>
-
-                    <!-- Interactive Offset Slider -->
-                    <div class="offset-slider-section" style="flex: 1; margin: 0;">
-                        <h3 style="margin-top: 0;"><span>🎚️</span> <span data-i18n="interactive.title">交互式偏移调整</span></h3>
-                        <p class="slider-help" data-i18n="interactive.help">拖动滑块实时查看不同时间偏移下的对齐效果</p>
-                        <div class="slider-container" style="max-width: 100%;">
-                            <div class="slider-header">
-                                <div class="slider-label">
-                                    <span data-i18n="interactive.current_offset">当前偏移</span>:
-                                    <span id="current-offset" class="offset-value">0.000</span>s
-                                </div>
-                                <div class="slider-info">
-                                    <span data-i18n="interactive.current_similarity">当前相似度</span>:
-                                    <span id="current-similarity" class="similarity-value">-</span>
-                                </div>
+                    <div class="vrs-video-body">
+                        <div class="vrs-video-frame-wrapper">
+                            <img id="vrs-video-frame" src="" alt="Video frame">
+                            <div id="vrs-video-loading">加载中...</div>
+                        </div>
+                        <div class="vrs-video-sidebar">
+                            <!-- Playback Controls -->
+                            <div class="vrs-video-controls">
+                                <button id="video-prev-frame-btn" title="上一帧">⏮</button>
+                                <button id="video-play-btn">▶ 播放</button>
+                                <button id="video-stop-btn">⏹ 停止</button>
+                                <button id="video-next-frame-btn" title="下一帧">⏭</button>
+                                <select id="video-speed">
+                                    <option value="0.1">0.1x</option>
+                                    <option value="0.25">0.25x</option>
+                                    <option value="0.5">0.5x</option>
+                                    <option value="1" selected>1x</option>
+                                    <option value="2">2x</option>
+                                </select>
+                                <label style="display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-size: 0.85rem; cursor: pointer;">
+                                    <input type="checkbox" id="show-hand-skeleton" checked> 手部骨架
+                                </label>
                             </div>
-                            <input type="range"
-                                   id="offset-slider"
-                                   class="offset-slider"
-                                   min="-10"
-                                   max="20"
-                                   step="0.01"
-                                   value="0"
-                                   style="width: 100%;">
-                            <div class="slider-marks">
-                                <span>-10s</span>
-                                <span id="max-offset-label">20s</span>
+                            <!-- Time Slider -->
+                            <div style="margin-top: 8px;">
+                                <input type="range" id="video-time-slider" min="0" max="100" value="0" step="0.1" style="width: 100%;">
                             </div>
-                            <div class="slider-buttons">
-                                <button id="apply-offset-btn" class="btn-primary" style="margin-right: 10px;">
-                                    <span class="btn-icon">✓</span>
-                                    <span data-i18n="interactive.apply">应用偏移</span>
-                                </button>
-                                <button id="reset-offset-btn" class="btn-reset" style="margin-right: 10px;">
-                                    <span class="btn-icon">🔄</span>
-                                    <span data-i18n="interactive.reset">重置到最优偏移</span>
-                                </button>
-                                <button id="save-offset-btn" class="btn-secondary" style="background: #28a745; border-color: #28a745;">
-                                    <span class="btn-icon">💾</span>
-                                    <span>保存偏移配置</span>
-                                </button>
+                            <!-- Force Indicators -->
+                            <div class="vrs-force-indicators">
+                                <!-- Thumb Force Bar -->
+                                <div class="vrs-force-row">
+                                    <span class="vrs-force-label">拇指</span>
+                                    <div class="vrs-force-bar-bg">
+                                        <div id="thumb-force-bar" class="vrs-force-bar-fill"></div>
+                                    </div>
+                                    <span id="thumb-force-value" class="vrs-force-value">0.0 N</span>
+                                </div>
+                                <!-- Index Force Bar -->
+                                <div class="vrs-force-row">
+                                    <span class="vrs-force-label">食指</span>
+                                    <div class="vrs-force-bar-bg">
+                                        <div id="index-force-bar" class="vrs-force-bar-fill"></div>
+                                    </div>
+                                    <span id="index-force-value" class="vrs-force-value">0.0 N</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -310,6 +375,109 @@
                 <div id="video-plot-container" style="margin-bottom: 20px;">
                     <div class="plot-container" style="margin-top: 0;">
                         <div id="plotly-chart"></div>
+                    </div>
+                    <div style="text-align: center; color: #999; font-size: 0.75rem; margin-top: 4px;">
+                        拖拽平移 | 滚轮缩放 | 双击重置 | 拖动下方范围条快速导航
+                    </div>
+                </div>
+
+                <!-- Segment List Panel -->
+                <div id="segment-list-panel" style="display: none; margin: 15px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="margin: 0; color: #495057; font-size: 0.95rem;" data-i18n="segments.title">
+                            力度片段
+                        </h4>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="add-segment-btn" style="padding: 3px 10px; border: 1px solid #28a745; border-radius: 4px; background: #28a745; color: #fff; cursor: pointer; font-size: 0.75rem; font-weight: 600;" data-i18n="segments.add">
+                                + 添加片段
+                            </button>
+                            <button id="save-segments-btn" style="padding: 3px 10px; border: 1px solid #007bff; border-radius: 4px; background: #007bff; color: #fff; cursor: pointer; font-size: 0.75rem; font-weight: 600;" data-i18n="segments.save">
+                                💾 保存片段
+                            </button>
+                            <button id="select-all-segments" style="padding: 3px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font-size: 0.75rem;" data-i18n="segments.select_all">
+                                全选
+                            </button>
+                            <button id="deselect-all-segments" style="padding: 3px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font-size: 0.75rem;" data-i18n="segments.deselect_all">
+                                取消全选
+                            </button>
+                        </div>
+                    </div>
+                    <div id="segment-list-body" style="max-height: 300px; overflow-y: auto;">
+                        <!-- Segment rows populated by JS -->
+                    </div>
+                    <div style="margin-top: 8px; font-size: 0.75rem; color: #999;" data-i18n="segments.drag_hint">
+                        在图表中拖动片段边界来调整起止时间，取消勾选可排除出 CSV 导出
+                    </div>
+                </div>
+
+                <!-- LeRobot Episode Preview Panel -->
+                <div id="episode-preview-panel" style="display: none; margin: 15px 0; padding: 15px; background: #f0f7ff; border-radius: 8px; border: 1px solid #b8daff;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="margin: 0; color: #0056b3; font-size: 0.95rem;" data-i18n="episodes.title">
+                            LeRobot 分集预览
+                        </h4>
+                        <span id="episode-count-badge" style="background: #0056b3; color: white; padding: 2px 10px; border-radius: 12px; font-size: 0.8rem;">
+                            0 episodes
+                        </span>
+                    </div>
+                    <div id="episode-list-body" style="max-height: 250px; overflow-y: auto;">
+                    </div>
+                    <div id="episode-total-stats" style="margin-top: 10px; font-size: 0.8rem; color: #555; display: flex; gap: 20px; flex-wrap: wrap;">
+                    </div>
+                </div>
+
+                <!-- Export for LeRobot Section -->
+                <div id="lerobot-export-section" style="display: none; margin: 15px 0; padding: 15px; background: #f0fff0; border-radius: 8px; border: 1px solid #b8e6b8;">
+                    <h4 style="margin: 0 0 12px 0; color: #28a745; font-size: 0.95rem;" data-i18n="export.title">
+                        导出到 LeRobot
+                    </h4>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                        <label style="font-size: 0.85rem; min-width: 80px; color: #555;" data-i18n="export.output_dir">输出目录:</label>
+                        <input type="text" id="lerobot-output-dir" placeholder="/path/to/output/dataset"
+                               style="flex: 1; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; font-family: monospace;">
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                        <label style="font-size: 0.85rem; min-width: 80px; color: #555;" data-i18n="export.task_name">任务名称:</label>
+                        <input type="text" id="lerobot-task-name" value="aria_recording" placeholder="e.g., pick_and_place"
+                               style="flex: 1; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem;">
+                    </div>
+                    <div style="margin-bottom: 10px;">
+                        <label style="font-size: 0.8rem; color: #666;" data-i18n="export.cli_label">CLI 命令:</label>
+                        <div id="lerobot-cli-command" style="background: #1a1a1a; color: #0f0; padding: 10px 15px; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all; margin-top: 4px; max-height: 120px; overflow-y: auto; user-select: all; -webkit-user-select: all;">
+                        </div>
+                    </div>
+                    <div class="export-buttons">
+                        <button id="run-conversion-btn" data-i18n="export.run_conversion">
+                            运行转换
+                        </button>
+                        <button id="save-segments-csv-btn" data-i18n="export.save_segments">
+                            保存片段 CSV 到服务器
+                        </button>
+                        <button id="copy-cli-btn" data-i18n="export.copy_cli">
+                            复制命令
+                        </button>
+                    </div>
+                    <div id="save-segments-status" style="margin-top: 8px; font-size: 0.8rem; color: #28a745; display: none;"></div>
+
+                    <!-- Conversion Progress -->
+                    <div id="conversion-progress" style="display: none;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div class="spinner-small"></div>
+                            <div>
+                                <div style="font-weight: 600; font-size: 0.85rem; color: #856404;" data-i18n="export.converting">转换中...</div>
+                                <div id="conversion-elapsed" style="font-size: 0.78rem; color: #856404;"></div>
+                                <div id="conversion-log-tail" style="font-size: 0.7rem; color: #888; font-family: monospace; margin-top: 4px; max-height: 60px; overflow: hidden; white-space: pre-wrap;"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Conversion Results -->
+                    <div id="conversion-results" style="display: none;"></div>
+
+                    <!-- Conversion Error -->
+                    <div id="conversion-error" style="display: none;">
+                        <h4 style="margin: 0 0 8px 0; color: #721c24; font-size: 0.9rem;" data-i18n="export.conversion_failed">转换失败</h4>
+                        <div id="conversion-error-body" style="font-size: 0.78rem; color: #721c24; font-family: monospace; white-space: pre-wrap; max-height: 200px; overflow-y: auto;"></div>
                     </div>
                 </div>
 
@@ -336,7 +504,7 @@
     </div>
 
     <!-- Load i18n first, then main.js -->
-    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/alignment/main.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/i18n.js') }}?v=11"></script>
+    <script src="{{ url_for('static', filename='js/alignment/main.js') }}?v=23"></script>
 </body>
 </html>
