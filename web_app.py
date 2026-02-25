@@ -868,13 +868,49 @@ def run_conversion():
 
         job_id = str(uuid.uuid4())[:8]
 
+        # 时间基准校准：
+        # alignment tool 中 Aria 时间轴从手部追踪第一帧归零，
+        # 所以 optimal_offset 和 segment start/end 都是基于手部追踪起始时间的。
+        # 但 convert.py 中 haptic_query_time 和 segment boundary 都是基于 VRS 相机第一帧的。
+        # 需要把两者之间的时间差 delta_s 加上去。
+        delta_s = 0.0
+        try:
+            from aria_api import AriaSession as _AriaSession
+            _sess = _AriaSession.from_vrs(vrs_path, mps_dir)
+            _info = _sess.get_session_info()
+            hand_start_ns = _info.get('hand_stats', {}).get('time_range_ns', [None])[0]
+
+            _provider = vrs_data_provider_module.create_vrs_data_provider(vrs_path)
+            _streams = _provider.get_all_streams()
+            camera_start_ns = None
+            for _sid in _streams:
+                _label = _provider.get_label_from_stream_id(_sid)
+                if 'rgb' in _label.lower():
+                    _r = _provider.get_image_data_by_index(_sid, 0)
+                    if _r and len(_r) >= 2:
+                        camera_start_ns = _r[1].capture_timestamp_ns
+                    break
+
+            if hand_start_ns is not None and camera_start_ns is not None:
+                delta_s = (hand_start_ns - camera_start_ns) / 1e9
+                print(f"[run_conversion] Time base delta: hand_start - camera_start = {delta_s:.3f}s")
+        except Exception as e:
+            print(f"[run_conversion] Could not compute time base delta (using 0): {e}")
+
+        # haptic_time = vrs_time - delta_s + optimal_offset
+        # get_force_at_time: query_time = time_s - time_offset
+        # 所以 time_offset = delta_s - optimal_offset
+        adjusted_offset = delta_s - haptic_offset
+        print(f"[run_conversion] haptic_time_offset: delta={delta_s:.3f}s - alignment_offset={haptic_offset:.3f}s = {adjusted_offset:.3f}s")
+
         convert_kwargs = {
             'vrs_path': vrs_path,
             'mps_dir': mps_dir,
             'out_dir': output_dir,
             'haptic_csv': haptic_csv,
-            'haptic_time_offset': haptic_offset,
+            'haptic_time_offset': adjusted_offset,
             'segments_csv': segments_csv_path,
+            'segment_time_offset': delta_s,  # 补偿 segment 时间基准差
             'overwrite': True,
             'task_name': task_name,
             'log_level': 'INFO',

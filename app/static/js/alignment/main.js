@@ -1683,7 +1683,8 @@ function updateForceIndicators(timestamp) {
     const currentOffset = parseFloat(offsetSlider.value) || optimalOffset || 0;
     const ariaStartTime = ariaTimestamps[0];
     const ariaTime = timestamp + ariaStartTime;
-    const hapticTime = ariaTime - currentOffset;
+    // haptic_time = aria_time + offset (和图表中 hapticTimestamps.map(t => t + offset) 一致)
+    const hapticTime = ariaTime + currentOffset;
 
     let closestIdx = 0;
     let left = 0;
@@ -1837,8 +1838,7 @@ async function startConversion() {
         return;
     }
 
-    const offsetSliderEl = document.getElementById('offsetSlider');
-    const currentOffset = parseFloat(offsetSliderEl?.value) || optimalOffset || 0;
+    const currentOffset = parseFloat(offsetSlider?.value) || optimalOffset || 0;
     const taskName = document.getElementById('lerobot-task-name')?.value || 'aria_recording';
 
     // MPS 目录推导
