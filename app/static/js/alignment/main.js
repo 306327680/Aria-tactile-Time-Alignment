@@ -1683,8 +1683,8 @@ function updateForceIndicators(timestamp) {
     const currentOffset = parseFloat(offsetSlider.value) || optimalOffset || 0;
     const ariaStartTime = ariaTimestamps[0];
     const ariaTime = timestamp + ariaStartTime;
-    // haptic_time = aria_time + offset (和图表中 hapticTimestamps.map(t => t + offset) 一致)
-    const hapticTime = ariaTime + currentOffset;
+    // 图表对齐: haptic_display = haptic_raw + offset => haptic_raw = aria_time - offset
+    const hapticTime = ariaTime - currentOffset;
 
     let closestIdx = 0;
     let left = 0;

@@ -868,11 +868,17 @@ def run_conversion():
 
         job_id = str(uuid.uuid4())[:8]
 
-        # 时间基准校准：
-        # alignment tool 中 Aria 时间轴从手部追踪第一帧归零，
-        # 所以 optimal_offset 和 segment start/end 都是基于手部追踪起始时间的。
-        # 但 convert.py 中 haptic_query_time 和 segment boundary 都是基于 VRS 相机第一帧的。
-        # 需要把两者之间的时间差 delta_s 加上去。
+        # 时间基准说明：
+        # 前端播放 VRS 视频用的是 VRS 相机相对时间（第一帧=0）。
+        # 用户手动调 slider 时是直接看着 VRS 视频帧和力曲线对齐的，
+        # 所以 slider 值直接建立了 VRS 相机时间 → haptic 原始时间的映射：
+        #   haptic_raw = vrs_camera_time - slider_value
+        # convert.py 中 get_force_at_time: query = time_s - time_offset
+        # time_s 就是 VRS 相机相对时间，所以 time_offset = slider_value（直接传）。
+        #
+        # segment start/end 来自 alignment tool，是 Aria 归零时间（手部追踪第一帧=0）。
+        # convert.py 中 create_segment_boundaries 用 VRS 相机 start_ns 做基准，
+        # 所以需要 delta_s = (hand_start - camera_start) 来补偿。
         delta_s = 0.0
         try:
             from aria_api import AriaSession as _AriaSession
@@ -897,23 +903,23 @@ def run_conversion():
         except Exception as e:
             print(f"[run_conversion] Could not compute time base delta (using 0): {e}")
 
-        # haptic_time = vrs_time - delta_s + optimal_offset
-        # get_force_at_time: query_time = time_s - time_offset
-        # 所以 time_offset = delta_s - optimal_offset
-        adjusted_offset = delta_s - haptic_offset
-        print(f"[run_conversion] haptic_time_offset: delta={delta_s:.3f}s - alignment_offset={haptic_offset:.3f}s = {adjusted_offset:.3f}s")
+        # haptic_time_offset = slider 值直接传（用户手动标定已包含时间基准差）
+        # segment_time_offset = delta_s（segment 在 Aria 时间轴，需转到 VRS 相机时间轴）
+        print(f"[run_conversion] haptic_time_offset: {haptic_offset:.3f}s (slider value, direct)")
+        print(f"[run_conversion] segment_time_offset: {delta_s:.3f}s")
 
         convert_kwargs = {
             'vrs_path': vrs_path,
             'mps_dir': mps_dir,
             'out_dir': output_dir,
             'haptic_csv': haptic_csv,
-            'haptic_time_offset': adjusted_offset,
+            'haptic_time_offset': haptic_offset,
             'segments_csv': segments_csv_path,
             'segment_time_offset': delta_s,  # 补偿 segment 时间基准差
             'overwrite': True,
             'task_name': task_name,
             'log_level': 'INFO',
+            'rotate_image': True,  # Aria RGB 需要顺时针旋转 90 度
         }
 
         with _conversion_lock:
