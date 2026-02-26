@@ -920,6 +920,7 @@ def run_conversion():
             'task_name': task_name,
             'log_level': 'INFO',
             'rotate_image': True,  # Aria RGB 需要顺时针旋转 90 度
+            'create_groot_modality': True,  # 自动生成 GR00T 所需的 modality.json, tasks.jsonl, episodes.jsonl
         }
 
         with _conversion_lock:

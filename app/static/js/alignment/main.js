@@ -2213,6 +2213,16 @@ async function startConversion() {
     const currentOffset = parseFloat(offsetSlider?.value) || optimalOffset || 0;
     const taskName = document.getElementById('lerobot-task-name')?.value || 'aria_recording';
 
+    // Remind user to set a meaningful task name for GR00T
+    if (taskName === 'aria_recording') {
+        const proceed = confirm(
+            '任务名称仍为默认值 "aria_recording"\n\n' +
+            'GR00T 训练需要有意义的任务描述（如 "pick up the jelly"）。\n\n' +
+            '点击"取消"返回修改，点击"确定"继续使用默认值。'
+        );
+        if (!proceed) return;
+    }
+
     // MPS 目录推导
     let mpsDir = null;
     if (window.serverMpsPath) {
