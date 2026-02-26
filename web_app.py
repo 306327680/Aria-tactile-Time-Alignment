@@ -2178,6 +2178,21 @@ _aria_session_vrs_path = None
 _aria_session_mps_dir = None
 _aria_rgb_h_orig = None  # cached original RGB image height for rotation compensation
 
+# LRU frame cache: (frame_index, skeleton_bool) -> jpeg_bytes
+from collections import OrderedDict
+_frame_cache = OrderedDict()
+_FRAME_CACHE_MAX = 200
+
+# VRS provider lock - protects concurrent access to _vrs_provider
+_vrs_lock = threading.Lock()
+
+# MP4 video generation state
+_video_generating = False
+_video_progress = 0  # 0-100
+_video_cached_path = None  # path to generated MP4
+_video_progress_file = None  # path to progress file for subprocess
+_video_gen_proc = None  # subprocess.Popen for MP4 generation
+
 
 def _get_or_create_aria_session(vrs_path, mps_dir):
     """Get or create AriaSession for hand landmark projection"""
@@ -2203,8 +2218,13 @@ def _get_or_create_aria_session(vrs_path, mps_dir):
 def init_vrs():
     """Initialize VRS session for video frame extraction"""
     global _vrs_provider, _vrs_path, _vrs_cameras, _vrs_time_range_ns, _vrs_num_frames, _vrs_rgb_stream_id
+    global _frame_cache, _video_cached_path
 
     print("[init_vrs] VRS_PROVIDER_AVAILABLE:", VRS_PROVIDER_AVAILABLE)
+
+    # Clear caches when switching VRS files
+    _frame_cache.clear()
+    _video_cached_path = None
 
     if not VRS_PROVIDER_AVAILABLE:
         return jsonify({'error': 'projectaria_tools not available', 'available': False}), 400
@@ -2496,6 +2516,299 @@ def get_video_frame():
             'error': str(e),
             'traceback': traceback.format_exc()
         }), 500
+
+
+def _extract_frame_jpeg(frame_index, show_skeleton=False, vrs_path_param='', mps_dir_param=''):
+    """Extract a single frame from VRS, rotate, encode as JPEG bytes.
+    Uses LRU cache to avoid re-decoding the same frame."""
+    global _frame_cache
+    import io
+    from PIL import Image
+
+    cache_key = (frame_index, show_skeleton, vrs_path_param if show_skeleton else '')
+    if cache_key in _frame_cache:
+        _frame_cache.move_to_end(cache_key)
+        return _frame_cache[cache_key]
+
+    stream_id = _vrs_rgb_stream_id
+    with _vrs_lock:
+        result = _vrs_provider.get_image_data_by_index(stream_id, frame_index)
+    if result is None:
+        return None
+
+    image_data, image_record = result[0], result[1]
+    frame_timestamp_ns = image_record.capture_timestamp_ns
+    image_array = image_data.to_numpy_array()
+
+    # Optional skeleton overlay
+    if show_skeleton and vrs_path_param and mps_dir_param and os.path.isdir(mps_dir_param):
+        try:
+            import cv2
+            session = _get_or_create_aria_session(vrs_path_param, mps_dir_param)
+            if session is not None:
+                hands = session.project_hands(
+                    frame_timestamp_ns, "camera-rgb",
+                    confidence_threshold=0.3,
+                    max_slop_ns=int(500e6)
+                )
+                draw_img = image_array.copy()
+                if len(draw_img.shape) == 2:
+                    draw_img = cv2.cvtColor(draw_img, cv2.COLOR_GRAY2BGR)
+                elif draw_img.shape[2] == 1:
+                    draw_img = cv2.cvtColor(draw_img[:, :, 0], cv2.COLOR_GRAY2BGR)
+                elif draw_img.shape[2] == 3:
+                    draw_img = cv2.cvtColor(draw_img, cv2.COLOR_RGB2BGR)
+
+                _HAND_CONNECTIONS = {
+                    'wrist_palm': {'conn': [(5, 20)], 'cl': (255, 255, 255), 'cr': (200, 200, 200)},
+                    'thumb':  {'conn': [(5, 6), (6, 7), (7, 0)], 'cl': (0, 0, 255), 'cr': (0, 0, 200)},
+                    'index':  {'conn': [(5, 8), (8, 9), (9, 10), (10, 1)], 'cl': (0, 165, 255), 'cr': (0, 120, 200)},
+                    'middle': {'conn': [(5, 11), (11, 12), (12, 13), (13, 2)], 'cl': (0, 255, 255), 'cr': (0, 200, 200)},
+                    'ring':   {'conn': [(5, 14), (14, 15), (15, 16), (16, 3)], 'cl': (0, 255, 0), 'cr': (0, 200, 0)},
+                    'pinky':  {'conn': [(5, 17), (17, 18), (18, 19), (19, 4)], 'cl': (255, 0, 0), 'cr': (200, 0, 0)},
+                    'palm':   {'conn': [(8, 20), (11, 20), (14, 20), (17, 20)], 'cl': (128, 0, 128), 'cr': (100, 0, 100)},
+                }
+
+                for side_key, is_left in [('left', True), ('right', False)]:
+                    hand_data = hands.get(side_key)
+                    if hand_data is None:
+                        continue
+                    coords, valid = hand_data
+                    if valid is None or not np.any(valid):
+                        continue
+                    for finfo in _HAND_CONNECTIONS.values():
+                        color = finfo['cl'] if is_left else finfo['cr']
+                        for si, ei in finfo['conn']:
+                            if si < len(coords) and ei < len(coords) and valid[si] and valid[ei]:
+                                p1 = (int(round(coords[si][0])), int(round(coords[si][1])))
+                                p2 = (int(round(coords[ei][0])), int(round(coords[ei][1])))
+                                cv2.line(draw_img, p1, p2, color, 2, cv2.LINE_AA)
+                    for i in range(len(coords)):
+                        if not valid[i]:
+                            continue
+                        c = (int(round(coords[i][0])), int(round(coords[i][1])))
+                        r = 6 if i == 5 else 4
+                        cv2.circle(draw_img, c, r, (255, 255, 255), -1, cv2.LINE_AA)
+                        cv2.circle(draw_img, c, r, (0, 0, 0), 1, cv2.LINE_AA)
+                        if i == 5:
+                            lbl = "L" if is_left else "R"
+                            cv2.putText(draw_img, lbl, (c[0] + 8, c[1]),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                            cv2.putText(draw_img, lbl, (c[0] + 8, c[1]),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+
+                image_array = cv2.cvtColor(draw_img, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            print(f"[_extract_frame_jpeg] Skeleton error (non-fatal): {e}")
+
+    # Convert to PIL, rotate, encode JPEG
+    if len(image_array.shape) == 2:
+        img = Image.fromarray(image_array, mode='L')
+    elif len(image_array.shape) == 3 and image_array.shape[2] == 1:
+        img = Image.fromarray(image_array[:, :, 0], mode='L')
+    else:
+        img = Image.fromarray(image_array)
+
+    img = img.rotate(-90, expand=True)
+
+    buffer = io.BytesIO()
+    img.save(buffer, format='JPEG', quality=85)
+    jpeg_bytes = buffer.getvalue()
+
+    # Cache the result
+    _frame_cache[cache_key] = jpeg_bytes
+    while len(_frame_cache) > _FRAME_CACHE_MAX:
+        _frame_cache.popitem(last=False)
+
+    return jpeg_bytes
+
+
+@app.route('/gripper/video_frame_raw', methods=['GET'])
+def get_video_frame_raw():
+    """Get video frame as raw JPEG bytes (no base64, no JSON wrapper)"""
+    global _vrs_provider, _vrs_time_range_ns, _vrs_num_frames, _vrs_rgb_stream_id
+
+    if not VRS_PROVIDER_AVAILABLE or _vrs_provider is None:
+        print("[video_frame_raw] REJECTED: VRS not initialized")
+        return 'VRS not initialized', 400
+
+    try:
+        import time as _t
+        from flask import make_response
+
+        _t0 = _t.time()
+
+        frame_index = request.args.get('frame_index', type=int)
+        timestamp_s = request.args.get('timestamp', type=float)
+        show_skeleton = request.args.get('skeleton', '0') == '1'
+        vrs_path_param = request.args.get('vrs_path', '')
+        mps_dir_param = request.args.get('mps_dir', '')
+
+        # Calculate frame index from timestamp
+        if frame_index is not None:
+            target_index = max(0, min(frame_index, _vrs_num_frames - 1))
+        elif timestamp_s is not None and _vrs_time_range_ns[0] > 0:
+            duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+            if duration_s > 0 and _vrs_num_frames > 0:
+                relative_pos = timestamp_s / duration_s if duration_s > 0 else 0
+                target_index = int(relative_pos * (_vrs_num_frames - 1))
+                target_index = max(0, min(target_index, _vrs_num_frames - 1))
+            else:
+                target_index = 0
+        else:
+            target_index = 0
+
+        jpeg_bytes = _extract_frame_jpeg(target_index, show_skeleton, vrs_path_param, mps_dir_param)
+        _dt = (_t.time() - _t0) * 1000
+        if jpeg_bytes is None:
+            print(f"[video_frame_raw] frame {target_index} -> None ({_dt:.0f}ms)")
+            return 'Frame not found', 404
+
+        print(f"[video_frame_raw] frame {target_index} -> {len(jpeg_bytes)/1024:.0f}KB ({_dt:.0f}ms) skeleton={show_skeleton}")
+
+        response = make_response(jpeg_bytes)
+        response.headers['Content-Type'] = 'image/jpeg'
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+        response.headers['X-Frame-Index'] = str(target_index)
+        return response
+
+    except Exception as e:
+        import traceback
+        print(f"[video_frame_raw] ERROR: {e}")
+        print(traceback.format_exc())
+        return str(e), 500
+
+
+@app.route('/gripper/generate_video', methods=['POST'])
+def generate_video():
+    """Pre-generate MP4 video from all VRS RGB frames for smooth playback."""
+    global _vrs_provider, _vrs_num_frames, _vrs_rgb_stream_id, _vrs_time_range_ns
+    global _video_generating, _video_progress, _video_cached_path, _video_progress_file, _video_gen_proc
+
+    if not VRS_PROVIDER_AVAILABLE or _vrs_provider is None:
+        return jsonify({'error': 'VRS not initialized'}), 400
+
+    if _video_generating:
+        return jsonify({'status': 'generating', 'progress': _video_progress})
+
+    try:
+        import subprocess
+        from PIL import Image
+
+        vrs_path = request.json.get('vrs_path', _vrs_path)
+
+        # Check for cached MP4
+        if vrs_path:
+            cache_dir = os.path.join(os.path.dirname(vrs_path), '.cache')
+            stem = os.path.splitext(os.path.basename(vrs_path))[0]
+            mp4_path = os.path.join(cache_dir, f'{stem}_rgb.mp4')
+        else:
+            cache_dir = tempfile.mkdtemp()
+            mp4_path = os.path.join(cache_dir, 'rgb_preview.mp4')
+
+        if os.path.exists(mp4_path):
+            duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+            fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
+            _video_cached_path = mp4_path
+            return jsonify({
+                'video_url': f'/gripper/serve_video?path={mp4_path}',
+                'num_frames': _vrs_num_frames,
+                'fps': round(fps, 2),
+                'duration_s': round(duration_s, 3),
+                'from_cache': True
+            })
+
+        # Generate MP4 in background SUBPROCESS (avoids GIL blocking Flask)
+        os.makedirs(cache_dir, exist_ok=True)
+        _video_generating = True
+        _video_progress = 0
+
+        # Progress file for subprocess communication
+        _video_progress_file = os.path.join(cache_dir, f'{stem}_progress.txt')
+        with open(_video_progress_file, 'w') as f:
+            f.write('0')
+
+        # Launch standalone script as subprocess
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generate_mp4.py')
+        python_path = sys.executable
+        _video_gen_proc = subprocess.Popen(
+            [python_path, script_path, vrs_path, mp4_path, _video_progress_file],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+
+        # Monitor subprocess in a lightweight thread (no GIL-heavy work)
+        def _monitor():
+            global _video_generating, _video_cached_path, _video_gen_proc
+            try:
+                stdout, _ = _video_gen_proc.communicate()
+                if stdout:
+                    print(stdout.decode(errors='replace'))
+                if _video_gen_proc.returncode == 0 and os.path.exists(mp4_path):
+                    _video_cached_path = mp4_path
+                    print(f"[generate_video] MP4 subprocess completed successfully")
+                else:
+                    print(f"[generate_video] MP4 subprocess failed with code {_video_gen_proc.returncode}")
+            except Exception as e:
+                print(f"[generate_video] Monitor error: {e}")
+            finally:
+                _video_generating = False
+                _video_gen_proc = None
+
+        monitor_thread = threading.Thread(target=_monitor, daemon=True)
+        monitor_thread.start()
+
+        duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+        fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
+        return jsonify({
+            'status': 'generating',
+            'progress': 0,
+            'num_frames': _vrs_num_frames,
+            'fps': round(fps, 2),
+            'duration_s': round(duration_s, 3)
+        })
+
+    except Exception as e:
+        import traceback
+        _video_generating = False
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/gripper/video_progress', methods=['GET'])
+def video_progress():
+    """Check MP4 video generation progress."""
+    global _video_generating, _video_progress, _video_cached_path, _video_progress_file
+    if _video_cached_path and os.path.exists(_video_cached_path):
+        duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+        fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
+        return jsonify({
+            'status': 'done',
+            'progress': 100,
+            'video_url': f'/gripper/serve_video?path={_video_cached_path}',
+            'fps': round(fps, 2),
+            'duration_s': round(duration_s, 3)
+        })
+    # Read progress from subprocess progress file
+    if _video_progress_file and os.path.exists(_video_progress_file):
+        try:
+            with open(_video_progress_file, 'r') as f:
+                _video_progress = int(f.read().strip())
+        except (ValueError, IOError):
+            pass
+    return jsonify({
+        'status': 'generating' if _video_generating else 'idle',
+        'progress': _video_progress
+    })
+
+
+@app.route('/gripper/serve_video', methods=['GET'])
+def serve_video():
+    """Serve pre-generated MP4 video file with Range request support and browser caching."""
+    path = request.args.get('path')
+    if path and os.path.exists(path):
+        response = send_file(path, mimetype='video/mp4')
+        response.headers['Cache-Control'] = 'public, max-age=86400'  # 浏览器缓存24小时
+        return response
+    return jsonify({'error': 'Video not found'}), 404
 
 
 @app.route('/gripper/vrs_status')
@@ -3284,4 +3597,5 @@ if __name__ == '__main__':
     print("=" * 60)
 
     # Use port 5001 to avoid conflicts with macOS AirPlay Receiver (port 5000)
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    # use_reloader=False: prevent stat reloader from killing background threads (MP4 generation)
+    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5001)

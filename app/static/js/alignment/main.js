@@ -10,6 +10,27 @@ let optimalOffset = null;
 let conversionJobId = null;
 let conversionPollInterval = null;
 
+// Loading timer state
+let _loadingTimerInterval = null;
+function startLoadingTimer() {
+    const timerEl = document.getElementById('loading-timer');
+    if (!timerEl) return;
+    const startTime = Date.now();
+    timerEl.textContent = '(0s)';
+    _loadingTimerInterval = setInterval(() => {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        timerEl.textContent = `(${elapsed}s)`;
+    }, 1000);
+}
+function stopLoadingTimer() {
+    if (_loadingTimerInterval) {
+        clearInterval(_loadingTimerInterval);
+        _loadingTimerInterval = null;
+    }
+    const timerEl = document.getElementById('loading-timer');
+    if (timerEl) timerEl.textContent = '';
+}
+
 // Saved alignment config mapping: { filePath -> offset_config }
 let savedAlignmentConfigs = {};
 
@@ -310,10 +331,13 @@ function checkSavedAlignmentConfig() {
     infoDiv.innerHTML = `${t('saved.offset')}: <b>${offset}s</b> | ${t('saved.similarity')}: <b>${sim}</b> | ${method.toUpperCase()}${sourceLabel ? ' | ' + sourceLabel : ''} ${ts ? '| ' + ts : ''}`;
     banner.style.display = 'block';
 
-    // Show/hide cached load button based on whether cache exists
+    // Show/disable cached load button based on whether cache exists
     const cachedBtn = document.getElementById('load-cached-alignment-btn');
     if (cachedBtn) {
-        cachedBtn.style.display = config.has_cache ? 'inline-block' : 'none';
+        cachedBtn.style.display = 'inline-block';
+        cachedBtn.disabled = !config.has_cache;
+        cachedBtn.style.opacity = config.has_cache ? '1' : '0.5';
+        cachedBtn.title = config.has_cache ? '' : 'No cache available';
     }
 
     // Fill in saved parameters to the form
@@ -369,6 +393,7 @@ async function loadSavedAlignment() {
     errorSection.style.display = 'none';
     downloadSection.style.display = 'none';
     loadingIndicator.style.display = 'block';
+    startLoadingTimer();
     alignBtn.disabled = true;
 
     try {
@@ -411,6 +436,7 @@ async function loadSavedAlignment() {
     } catch (error) {
         displayError(error);
     } finally {
+        stopLoadingTimer();
         loadingIndicator.style.display = 'none';
         alignBtn.disabled = false;
     }
@@ -479,6 +505,7 @@ async function loadCachedAlignment() {
     } catch (error) {
         displayError(error);
     } finally {
+        stopLoadingTimer();
         loadingIndicator.style.display = 'none';
         alignBtn.disabled = false;
     }
@@ -509,6 +536,7 @@ alignBtn.addEventListener('click', async function () {
     errorSection.style.display = 'none';
     downloadSection.style.display = 'none';
     loadingIndicator.style.display = 'block';
+    startLoadingTimer();
     alignBtn.disabled = true;
 
     try {
@@ -551,6 +579,7 @@ alignBtn.addEventListener('click', async function () {
     } catch (error) {
         displayError(error);
     } finally {
+        stopLoadingTimer();
         loadingIndicator.style.display = 'none';
         alignBtn.disabled = false;
     }
@@ -1511,8 +1540,24 @@ let vrsPlaybackSpeed = 1;
 let vrsNumFrames = 0;
 let vrsDuration = 0;
 let vrsFrameLoading = false;
+let vrsVideoMode = 'frame'; // 'frame' = per-frame <img>, 'video' = MP4 <video>
+let vrsVideoFPS = 30;
+
+// Frame pre-cache: Map<frameIndex, blobUrl>
+const vrsFrameCache = new Map();
+let vrsPrefetchAbort = null; // AbortController for cancelling prefetch
+let vrsPrefetchDone = false;
+const VRS_PREFETCH_CONCURRENCY = 4; // parallel fetch requests
+
+let _vrsInitializedPath = null; // track which VRS file is currently loaded
 
 async function initVRSSessionFromPath(vrsPath) {
+    // Skip if already initialized for the same VRS file
+    if (vrsVideoInitialized && _vrsInitializedPath === vrsPath) {
+        console.log('[vrs] Already initialized for', vrsPath);
+        return true;
+    }
+
     const loadingEl = document.getElementById('vrs-video-loading');
 
     try {
@@ -1530,6 +1575,7 @@ async function initVRSSessionFromPath(vrsPath) {
 
         if (response.ok && result.success) {
             vrsVideoInitialized = true;
+            _vrsInitializedPath = vrsPath;
 
             const videoPanel = document.getElementById('vrs-video-panel');
             if (videoPanel) videoPanel.style.display = 'block';
@@ -1547,6 +1593,10 @@ async function initVRSSessionFromPath(vrsPath) {
             updateTimelineIndicator(vrsCurrentTime);
 
             if (loadingEl) loadingEl.style.display = 'none';
+
+            // Start MP4 video generation in background for smooth playback
+            generateAndLoadVideo(vrsPath);
+
             return true;
         } else {
             throw new Error(result.error || 'Failed to initialize VRS session');
@@ -1556,6 +1606,222 @@ async function initVRSSessionFromPath(vrsPath) {
         if (loadingEl) loadingEl.style.display = 'none';
         return false;
     }
+}
+
+/**
+ * Generate MP4 video from VRS frames for smooth playback.
+ * Shows progress bar during generation, switches to <video> mode when done.
+ */
+async function generateAndLoadVideo(vrsPath) {
+    const progressEl = document.getElementById('vrs-video-gen-progress');
+
+    try {
+        // Show progress immediately
+        if (progressEl) {
+            progressEl.style.display = 'block';
+            progressEl.innerHTML = '生成视频中... <span id="video-gen-percent">0</span>%';
+        }
+
+        const response = await fetch('/gripper/generate_video', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vrs_path: vrsPath })
+        });
+        const result = await response.json();
+
+        if (result.video_url) {
+            // MP4 already cached — load immediately
+            if (progressEl) progressEl.style.display = 'none';
+            _switchToVideoMode(result.video_url, result.fps);
+            return;
+        }
+
+        if (result.status === 'generating') {
+            vrsVideoFPS = result.fps || 30;
+            let pollCount = 0;
+            const maxPolls = 600; // 20 minutes max (600 * 2s)
+
+            const pollInterval = setInterval(async () => {
+                pollCount++;
+                if (pollCount > maxPolls) {
+                    clearInterval(pollInterval);
+                    console.warn('[video] MP4 generation timed out');
+                    if (progressEl) progressEl.style.display = 'none';
+                    return;
+                }
+                try {
+                    const pr = await fetch('/gripper/video_progress');
+                    const pg = await pr.json();
+                    const pEl = document.getElementById('video-gen-percent');
+                    if (pEl) pEl.textContent = pg.progress;
+
+                    if (pg.status === 'done' && pg.video_url) {
+                        clearInterval(pollInterval);
+                        if (progressEl) progressEl.style.display = 'none';
+                        _switchToVideoMode(pg.video_url, pg.fps);
+                    } else if (pg.status === 'idle') {
+                        clearInterval(pollInterval);
+                        console.log('[video] MP4 generation idle, stopping poll');
+                        if (progressEl) progressEl.style.display = 'none';
+                    }
+                } catch (e) {
+                    console.error('Video progress poll error:', e);
+                    clearInterval(pollInterval);
+                }
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('Video generation failed, staying in per-frame mode:', error);
+        if (progressEl) progressEl.style.display = 'none';
+    }
+}
+
+function _switchToVideoMode(videoUrl, fps) {
+    const videoEl = document.getElementById('vrs-video-element');
+    const imgEl = document.getElementById('vrs-video-frame');
+    if (!videoEl) return;
+
+    // Check if skeleton mode is active — if so, don't switch yet
+    const skeletonCheckbox = document.getElementById('show-hand-skeleton');
+    if (skeletonCheckbox && skeletonCheckbox.checked) {
+        // Store URL for when skeleton is unchecked
+        videoEl.dataset.pendingUrl = videoUrl;
+        videoEl.dataset.pendingFps = fps;
+        console.log('[video] MP4 ready but skeleton mode active, deferring switch');
+        return;
+    }
+
+    vrsVideoMode = 'video';
+    vrsVideoFPS = fps || 30;
+
+    // Load video, but keep <img> visible until video has first frame
+    videoEl.src = videoUrl;
+    videoEl.style.display = 'block';
+
+    videoEl.onloadeddata = function () {
+        // Video has first frame — now safe to hide <img>
+        if (imgEl) imgEl.style.display = 'none';
+        videoEl.currentTime = vrsCurrentTime;
+        console.log(`[video] Video loaded, switched to MP4 mode (${fps} FPS)`);
+    };
+
+    // Sync timeline and force indicators on time update
+    videoEl.ontimeupdate = function () {
+        vrsCurrentTime = videoEl.currentTime;
+        _updateTimeDisplay(vrsCurrentTime);
+        updateTimelineIndicator(vrsCurrentTime);
+        updateForceIndicators(vrsCurrentTime);
+    };
+}
+
+function _updateTimeDisplay(timestamp) {
+    const timeDisplay = document.getElementById('vrs-video-time');
+    const timeSlider = document.getElementById('video-time-slider');
+    if (timeDisplay) timeDisplay.textContent = timestamp.toFixed(3);
+    if (timeSlider && vrsTimeRange[1] > vrsTimeRange[0]) {
+        const percent = ((timestamp - vrsTimeRange[0]) / (vrsTimeRange[1] - vrsTimeRange[0])) * 100;
+        timeSlider.value = Math.min(100, Math.max(0, percent));
+    }
+}
+
+/**
+ * Pre-fetch all frames into browser memory (blob URLs) for instant access.
+ * Uses concurrent requests and updates a progress indicator.
+ */
+function startFramePrefetch() {
+    console.log(`[prefetch] called, vrsNumFrames=${vrsNumFrames}, vrsVideoInitialized=${vrsVideoInitialized}`);
+    if (vrsNumFrames <= 0) {
+        console.warn('[prefetch] vrsNumFrames is 0, skipping');
+        return;
+    }
+
+    // Cancel any previous prefetch
+    if (vrsPrefetchAbort) {
+        console.log('[prefetch] aborting previous prefetch');
+        vrsPrefetchAbort.abort();
+    }
+    vrsFrameCache.clear();
+    vrsPrefetchDone = false;
+
+    vrsPrefetchAbort = new AbortController();
+    const signal = vrsPrefetchAbort.signal;
+
+    const progressEl = document.getElementById('vrs-video-gen-progress');
+    const total = vrsNumFrames;
+
+    // Show prefetch progress
+    if (progressEl) {
+        progressEl.style.display = 'block';
+        progressEl.innerHTML = '缓存帧中... <span id="video-gen-percent">0</span>/' + total;
+    } else {
+        console.warn('[prefetch] progressEl not found in DOM');
+    }
+
+    let fetched = 0;
+    let failed = 0;
+    let nextIndex = 0;
+
+    console.log(`[prefetch] Starting ${total} frames, concurrency=${VRS_PREFETCH_CONCURRENCY}`);
+
+    async function fetchWorker(workerId) {
+        console.log(`[prefetch] worker ${workerId} started`);
+        while (nextIndex < total) {
+            if (signal.aborted) {
+                console.log(`[prefetch] worker ${workerId} aborted`);
+                return;
+            }
+            const idx = nextIndex++;
+            const t0 = performance.now();
+            try {
+                const url = `/gripper/video_frame_raw?frame_index=${idx}&skeleton=0`;
+                const resp = await fetch(url, { signal });
+                const dt = (performance.now() - t0).toFixed(0);
+                if (resp.ok) {
+                    const blob = await resp.blob();
+                    const blobUrl = URL.createObjectURL(blob);
+                    vrsFrameCache.set(idx, blobUrl);
+                    if (idx < 3 || idx % 50 === 0) {
+                        console.log(`[prefetch] frame ${idx} OK (${dt}ms, ${(blob.size/1024).toFixed(0)}KB)`);
+                    }
+                } else {
+                    failed++;
+                    console.warn(`[prefetch] frame ${idx} HTTP ${resp.status} (${dt}ms)`);
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    console.log(`[prefetch] worker ${workerId} aborted at frame ${idx}`);
+                    return;
+                }
+                failed++;
+                const dt = (performance.now() - t0).toFixed(0);
+                console.error(`[prefetch] frame ${idx} error (${dt}ms):`, e.message);
+            }
+            fetched++;
+            const pEl = document.getElementById('video-gen-percent');
+            if (pEl) pEl.textContent = fetched;
+        }
+        console.log(`[prefetch] worker ${workerId} done`);
+    }
+
+    const workers = [];
+    for (let i = 0; i < VRS_PREFETCH_CONCURRENCY; i++) {
+        workers.push(fetchWorker(i));
+    }
+
+    Promise.all(workers).then(() => {
+        vrsPrefetchDone = true;
+        if (progressEl) progressEl.style.display = 'none';
+        console.log(`[prefetch] DONE: ${fetched} fetched, ${failed} failed, ${vrsFrameCache.size} cached`);
+    });
+}
+
+/**
+ * Get the frame index closest to a given timestamp.
+ */
+function timestampToFrameIndex(timestamp) {
+    if (vrsDuration <= 0 || vrsNumFrames <= 0) return 0;
+    const relPos = (timestamp - vrsTimeRange[0]) / (vrsTimeRange[1] - vrsTimeRange[0]);
+    return Math.max(0, Math.min(vrsNumFrames - 1, Math.round(relPos * (vrsNumFrames - 1))));
 }
 
 function initVRSVideoPlayer() {
@@ -1585,6 +1851,10 @@ function initVRSVideoPlayer() {
     if (speedSelect) {
         speedSelect.addEventListener('change', function (e) {
             vrsPlaybackSpeed = parseFloat(e.target.value);
+            const videoEl = document.getElementById('vrs-video-element');
+            if (vrsVideoMode === 'video' && videoEl) {
+                videoEl.playbackRate = vrsPlaybackSpeed;
+            }
         });
     }
 
@@ -1593,7 +1863,12 @@ function initVRSVideoPlayer() {
         timeSlider.addEventListener('input', function (e) {
             const percent = parseFloat(e.target.value);
             vrsCurrentTime = vrsTimeRange[0] + (vrsTimeRange[1] - vrsTimeRange[0]) * (percent / 100);
-            updateVRSVideoFrame(vrsCurrentTime);
+            if (vrsVideoMode === 'video') {
+                const videoEl = document.getElementById('vrs-video-element');
+                if (videoEl) videoEl.currentTime = vrsCurrentTime;
+            } else {
+                updateVRSVideoFrame(vrsCurrentTime);
+            }
             updateTimelineIndicator(vrsCurrentTime);
             updateForceIndicators(vrsCurrentTime);
         });
@@ -1607,8 +1882,13 @@ function initVRSVideoPlayer() {
         prevBtn.addEventListener('click', async function () {
             if (!vrsVideoInitialized) return;
             vrsCurrentTime = Math.max(vrsTimeRange[0], vrsCurrentTime - frameDt());
-            vrsFrameLoading = false; // force unlock so frame loads
-            await updateVRSVideoFrame(vrsCurrentTime);
+            if (vrsVideoMode === 'video') {
+                const videoEl = document.getElementById('vrs-video-element');
+                if (videoEl) videoEl.currentTime = vrsCurrentTime;
+            } else {
+                vrsFrameLoading = false;
+                await updateVRSVideoFrame(vrsCurrentTime);
+            }
             updateTimelineIndicator(vrsCurrentTime);
             updateForceIndicators(vrsCurrentTime);
         });
@@ -1619,34 +1899,91 @@ function initVRSVideoPlayer() {
         nextBtn.addEventListener('click', async function () {
             if (!vrsVideoInitialized) return;
             vrsCurrentTime = Math.min(vrsTimeRange[1], vrsCurrentTime + frameDt());
-            vrsFrameLoading = false; // force unlock so frame loads
-            await updateVRSVideoFrame(vrsCurrentTime);
+            if (vrsVideoMode === 'video') {
+                const videoEl = document.getElementById('vrs-video-element');
+                if (videoEl) videoEl.currentTime = vrsCurrentTime;
+            } else {
+                vrsFrameLoading = false;
+                await updateVRSVideoFrame(vrsCurrentTime);
+            }
             updateTimelineIndicator(vrsCurrentTime);
             updateForceIndicators(vrsCurrentTime);
+        });
+    }
+
+    // Skeleton toggle: switch between video and per-frame mode
+    const skeletonCheckbox = document.getElementById('show-hand-skeleton');
+    if (skeletonCheckbox) {
+        skeletonCheckbox.addEventListener('change', function () {
+            const videoEl = document.getElementById('vrs-video-element');
+            const imgEl = document.getElementById('vrs-video-frame');
+            if (this.checked) {
+                // Switch to per-frame skeleton mode
+                if (vrsVideoMode === 'video' && videoEl) {
+                    vrsCurrentTime = videoEl.currentTime || vrsCurrentTime;
+                    videoEl.pause();
+                    videoEl.style.display = 'none';
+                }
+                if (imgEl) imgEl.style.display = 'block';
+                vrsVideoMode = 'frame';
+                if (vrsVideoPlaying) {
+                    pauseVRSVideo();
+                    const pb = document.getElementById('video-play-btn');
+                    if (pb) pb.textContent = '▶ 播放';
+                }
+                vrsFrameLoading = false;
+                updateVRSVideoFrame(vrsCurrentTime);
+            } else {
+                // Switch back to video mode if MP4 is available
+                if (videoEl && (videoEl.src || videoEl.dataset.pendingUrl)) {
+                    const pendingUrl = videoEl.dataset.pendingUrl;
+                    if (pendingUrl) {
+                        _switchToVideoMode(pendingUrl, parseFloat(videoEl.dataset.pendingFps) || 30);
+                        delete videoEl.dataset.pendingUrl;
+                        delete videoEl.dataset.pendingFps;
+                    } else if (videoEl.src) {
+                        // Video already loaded, just show it
+                        videoEl.style.display = 'block';
+                        vrsVideoMode = 'video';
+                        videoEl.currentTime = vrsCurrentTime;
+                        // Hide img only after video is seeked
+                        videoEl.onseeked = function () {
+                            if (imgEl) imgEl.style.display = 'none';
+                            videoEl.onseeked = null;
+                        };
+                    }
+                } else {
+                    // No MP4, stay in frame mode but without skeleton
+                    vrsFrameLoading = false;
+                    updateVRSVideoFrame(vrsCurrentTime);
+                }
+            }
         });
     }
 }
 
 async function updateVRSVideoFrame(timestamp) {
     if (!vrsVideoInitialized) return;
-    if (vrsFrameLoading) return;
 
     const frameImg = document.getElementById('vrs-video-frame');
-    const timeDisplay = document.getElementById('vrs-video-time');
-    const timeSlider = document.getElementById('video-time-slider');
+    _updateTimeDisplay(timestamp);
 
-    if (timeDisplay) timeDisplay.textContent = timestamp.toFixed(3);
-    if (timeSlider && vrsTimeRange[1] > vrsTimeRange[0]) {
-        const percent = ((timestamp - vrsTimeRange[0]) / (vrsTimeRange[1] - vrsTimeRange[0])) * 100;
-        timeSlider.value = Math.min(100, Math.max(0, percent));
+    // Check prefetch cache first (instant, no network)
+    const skeletonCheckbox = document.getElementById('show-hand-skeleton');
+    const showSkeleton = skeletonCheckbox ? skeletonCheckbox.checked : false;
+    if (!showSkeleton) {
+        const frameIdx = timestampToFrameIndex(timestamp);
+        const cachedUrl = vrsFrameCache.get(frameIdx);
+        if (cachedUrl) {
+            if (frameImg) frameImg.src = cachedUrl;
+            return;
+        }
     }
 
+    // Cache miss or skeleton mode — fetch from server
     vrsFrameLoading = true;
     try {
-        // Build URL with optional skeleton params
-        let url = `/gripper/video_frame?timestamp=${timestamp}&camera=camera-rgb`;
-        const skeletonCheckbox = document.getElementById('show-hand-skeleton');
-        const showSkeleton = skeletonCheckbox ? skeletonCheckbox.checked : false;
+        let url = `/gripper/video_frame_raw?timestamp=${timestamp}&camera=camera-rgb`;
         if (showSkeleton && window.serverVrsPath) {
             const mpsDir = getMpsDir();
             if (mpsDir) {
@@ -1657,10 +1994,14 @@ async function updateVRSVideoFrame(timestamp) {
         }
 
         const response = await fetch(url);
-        const result = await response.json();
-
-        if (response.ok && result.image) {
-            if (frameImg) frameImg.src = result.image;
+        if (response.ok) {
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            if (frameImg) {
+                if (frameImg._blobUrl) URL.revokeObjectURL(frameImg._blobUrl);
+                frameImg.src = blobUrl;
+                frameImg._blobUrl = blobUrl;
+            }
         }
     } catch (error) {
         console.error('Error fetching video frame:', error);
@@ -1737,23 +2078,49 @@ function updateForceIndicators(timestamp) {
 function playVRSVideo() {
     if (!vrsVideoInitialized || vrsVideoPlaying) return;
     vrsVideoPlaying = true;
-    const frameInterval = 100;
 
-    vrsPlaybackInterval = setInterval(() => {
-        vrsCurrentTime += (frameInterval / 1000) * vrsPlaybackSpeed;
-        if (vrsCurrentTime > vrsTimeRange[1]) {
-            vrsCurrentTime = vrsTimeRange[0];
+    if (vrsVideoMode === 'video') {
+        const videoEl = document.getElementById('vrs-video-element');
+        if (videoEl) {
+            videoEl.playbackRate = vrsPlaybackSpeed;
+            videoEl.currentTime = vrsCurrentTime;
+            videoEl.play();
         }
-        updateVRSVideoFrame(vrsCurrentTime);
-        updateTimelineIndicator(vrsCurrentTime);
-        updateForceIndicators(vrsCurrentTime);
-    }, frameInterval);
+    } else {
+        // Per-frame mode: advance time only after frame loads
+        const stepTime = () => {
+            if (!vrsVideoPlaying) return;
+            const frameInterval = 100; // ms between frames
+            const timeStep = (frameInterval / 1000) * vrsPlaybackSpeed;
+            vrsCurrentTime += timeStep;
+            if (vrsCurrentTime > vrsTimeRange[1]) {
+                vrsCurrentTime = vrsTimeRange[0];
+            }
+            _updateTimeDisplay(vrsCurrentTime);
+            updateTimelineIndicator(vrsCurrentTime);
+            updateForceIndicators(vrsCurrentTime);
+
+            // Fetch frame, then schedule next step after it arrives
+            const t0 = performance.now();
+            updateVRSVideoFrame(vrsCurrentTime).then(() => {
+                if (!vrsVideoPlaying) return;
+                const elapsed = performance.now() - t0;
+                const delay = Math.max(0, frameInterval - elapsed);
+                vrsPlaybackInterval = setTimeout(stepTime, delay);
+            });
+        };
+        stepTime();
+    }
 }
 
 function pauseVRSVideo() {
     vrsVideoPlaying = false;
+    if (vrsVideoMode === 'video') {
+        const videoEl = document.getElementById('vrs-video-element');
+        if (videoEl) videoEl.pause();
+    }
     if (vrsPlaybackInterval) {
-        clearInterval(vrsPlaybackInterval);
+        clearTimeout(vrsPlaybackInterval);
         vrsPlaybackInterval = null;
     }
     vrsFrameLoading = false;
@@ -1762,7 +2129,12 @@ function pauseVRSVideo() {
 function stopVRSVideo() {
     pauseVRSVideo();
     vrsCurrentTime = vrsTimeRange[0];
-    updateVRSVideoFrame(vrsCurrentTime);
+    if (vrsVideoMode === 'video') {
+        const videoEl = document.getElementById('vrs-video-element');
+        if (videoEl) videoEl.currentTime = vrsCurrentTime;
+    } else {
+        updateVRSVideoFrame(vrsCurrentTime);
+    }
     updateTimelineIndicator(vrsCurrentTime);
     updateForceIndicators(vrsCurrentTime);
 }
