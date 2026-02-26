@@ -2,6 +2,36 @@
 
 一个用于对齐 Project Aria 手部追踪数据与触觉传感器数据的时间同步工具，提供命令行工具和交互式 Web 界面。
 
+## 📋 版本说明
+
+### v33 (2026-02-26)
+
+**RGB 视频播放优化 & MP4 缓存**
+- 新增 `generate_mp4.py` 独立脚本，从 VRS RGB 帧生成 MP4 视频（子进程运行，不阻塞 Flask）
+- VRS 初始化后自动在后台生成 MP4，缓存到磁盘（`.cache/{name}_rgb.mp4`），下次加载秒开
+- 双模式播放：`<video>` 标签播放 MP4（流畅）/ `<img>` 逐帧显示骨架叠加
+- 服务端 LRU 帧缓存（200帧）+ 原始 JPEG 端点，减少 33% 带宽开销
+- 新增 `/gripper/generate_video`、`/gripper/video_progress`、`/gripper/serve_video` 接口
+- 修复逐帧播放时间/画面不同步：改用串行帧加载替代 setInterval
+- 修复切换视频模式时黑屏：等待 `loadeddata` 后再隐藏旧画面
+- 标定加载 UX 优化：按钮优先级调整、加载计时显示
+- 关闭 Flask stat reloader，防止后台线程被杀
+
+### v26 (2026-02-25)
+
+**手部骨架叠加 & 数据管理**
+- RGB 相机画面支持手部骨架叠加显示（左右手不同颜色）
+- RGB 图像 90° 旋转校正
+- 触觉力度偏移公式修复
+- 时间对齐文档更新
+
+### v20 (2026-02-25)
+
+**LeRobot 导出 & 片段管理**
+- 简化 LeRobot schema：observation.state 79→7维，action 8→2维
+- 修复 LeRobot 导出时间偏移对齐 bug
+- 新增数据管理器，增强触觉力度追踪
+
 ## ✨ 功能特性
 
 本项目提供了基于相关性分析的时间对齐算法，用于同步：
