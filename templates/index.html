@@ -445,6 +445,14 @@
                         <input type="text" id="lerobot-task-name" value="aria_recording" placeholder="e.g., pick_and_place"
                                style="flex: 1; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem;">
                     </div>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                        <label style="font-size: 0.85rem; min-width: 80px; color: #555;">路径格式:</label>
+                        <select id="lerobot-path-format"
+                                style="flex: 1; padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem;">
+                            <option value="groot" selected>GR00T (episode_chunk / episode_index)</option>
+                            <option value="lerobot">LeRobot v3.0 (chunk_index / file_index)</option>
+                        </select>
+                    </div>
                     <div style="margin-bottom: 10px;">
                         <label style="font-size: 0.8rem; color: #666;" data-i18n="export.cli_label">CLI 命令:</label>
                         <div id="lerobot-cli-command" style="background: #1a1a1a; color: #0f0; padding: 10px 15px; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; word-break: break-all; margin-top: 4px; max-height: 120px; overflow-y: auto; user-select: all; -webkit-user-select: all;">
@@ -509,6 +517,6 @@
 
     <!-- Load i18n first, then main.js -->
     <script src="{{ url_for('static', filename='js/i18n.js') }}?v=11"></script>
-    <script src="{{ url_for('static', filename='js/alignment/main.js') }}?v=34"></script>
+    <script src="{{ url_for('static', filename='js/alignment/main.js') }}?v=35"></script>
 </body>
 </html>

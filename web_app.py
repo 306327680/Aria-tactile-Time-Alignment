@@ -806,6 +806,7 @@ def run_conversion():
         segments_csv_path = data.get('segments_csv')
         output_dir = data.get('output_dir')
         task_name = data.get('task_name', 'aria_recording')
+        path_format = data.get('path_format', 'groot')  # 'groot' or 'lerobot'
 
         # 推导 MPS 目录
         mps_dir = data.get('mps_dir')
@@ -921,6 +922,7 @@ def run_conversion():
             'log_level': 'INFO',
             'rotate_image': True,  # Aria RGB 需要顺时针旋转 90 度
             'create_groot_modality': True,  # 自动生成 GR00T 所需的 modality.json, tasks.jsonl, episodes.jsonl
+            'path_format': path_format,  # 'groot' = episode_chunk/episode_index, 'lerobot' = chunk_index/file_index
         }
 
         with _conversion_lock:
@@ -2187,12 +2189,19 @@ _FRAME_CACHE_MAX = 200
 # VRS provider lock - protects concurrent access to _vrs_provider
 _vrs_lock = threading.Lock()
 
-# MP4 video generation state
+# MP4 video generation state (plain)
 _video_generating = False
 _video_progress = 0  # 0-100
 _video_cached_path = None  # path to generated MP4
 _video_progress_file = None  # path to progress file for subprocess
 _video_gen_proc = None  # subprocess.Popen for MP4 generation
+
+# MP4 video generation state (skeleton overlay)
+_skeleton_video_generating = False
+_skeleton_video_progress = 0
+_skeleton_video_cached_path = None
+_skeleton_video_progress_file = None
+_skeleton_video_gen_proc = None
 
 
 def _get_or_create_aria_session(vrs_path, mps_dir):
@@ -2682,9 +2691,12 @@ def get_video_frame_raw():
 
 @app.route('/gripper/generate_video', methods=['POST'])
 def generate_video():
-    """Pre-generate MP4 video from all VRS RGB frames for smooth playback."""
+    """Pre-generate MP4 video from all VRS RGB frames for smooth playback.
+    Also auto-triggers skeleton overlay MP4 generation if mps_dir is available."""
     global _vrs_provider, _vrs_num_frames, _vrs_rgb_stream_id, _vrs_time_range_ns
     global _video_generating, _video_progress, _video_cached_path, _video_progress_file, _video_gen_proc
+    global _skeleton_video_generating, _skeleton_video_progress, _skeleton_video_cached_path
+    global _skeleton_video_progress_file, _skeleton_video_gen_proc
 
     if not VRS_PROVIDER_AVAILABLE or _vrs_provider is None:
         return jsonify({'error': 'VRS not initialized'}), 400
@@ -2697,27 +2709,42 @@ def generate_video():
         from PIL import Image
 
         vrs_path = request.json.get('vrs_path', _vrs_path)
+        mps_dir = request.json.get('mps_dir', '')
 
         # Check for cached MP4
         if vrs_path:
             cache_dir = os.path.join(os.path.dirname(vrs_path), '.cache')
             stem = os.path.splitext(os.path.basename(vrs_path))[0]
             mp4_path = os.path.join(cache_dir, f'{stem}_rgb.mp4')
+            skeleton_mp4_path = os.path.join(cache_dir, f'{stem}_rgb_skeleton.mp4')
         else:
             cache_dir = tempfile.mkdtemp()
             mp4_path = os.path.join(cache_dir, 'rgb_preview.mp4')
+            skeleton_mp4_path = os.path.join(cache_dir, 'rgb_preview_skeleton.mp4')
+
+        duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
+        fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
+
+        # Auto-trigger skeleton MP4 generation in background (if mps_dir available and not cached)
+        if mps_dir and os.path.isdir(mps_dir) and not os.path.exists(skeleton_mp4_path) and not _skeleton_video_generating:
+            _start_skeleton_video_gen(vrs_path, skeleton_mp4_path, cache_dir, stem, mps_dir)
 
         if os.path.exists(mp4_path):
-            duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
-            fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
             _video_cached_path = mp4_path
-            return jsonify({
+            result = {
                 'video_url': f'/gripper/serve_video?path={mp4_path}',
                 'num_frames': _vrs_num_frames,
                 'fps': round(fps, 2),
                 'duration_s': round(duration_s, 3),
                 'from_cache': True
-            })
+            }
+            # Include skeleton video info if available
+            if os.path.exists(skeleton_mp4_path):
+                _skeleton_video_cached_path = skeleton_mp4_path
+                result['skeleton_video_url'] = f'/gripper/serve_video?path={skeleton_mp4_path}'
+            elif _skeleton_video_generating:
+                result['skeleton_status'] = 'generating'
+            return jsonify(result)
 
         # Generate MP4 in background SUBPROCESS (avoids GIL blocking Flask)
         os.makedirs(cache_dir, exist_ok=True)
@@ -2747,6 +2774,9 @@ def generate_video():
                 if _video_gen_proc.returncode == 0 and os.path.exists(mp4_path):
                     _video_cached_path = mp4_path
                     print(f"[generate_video] MP4 subprocess completed successfully")
+                    # Auto-trigger skeleton video generation after plain video is done
+                    if mps_dir and os.path.isdir(mps_dir) and not os.path.exists(skeleton_mp4_path):
+                        _start_skeleton_video_gen(vrs_path, skeleton_mp4_path, cache_dir, stem, mps_dir)
                 else:
                     print(f"[generate_video] MP4 subprocess failed with code {_video_gen_proc.returncode}")
             except Exception as e:
@@ -2758,8 +2788,6 @@ def generate_video():
         monitor_thread = threading.Thread(target=_monitor, daemon=True)
         monitor_thread.start()
 
-        duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
-        fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
         return jsonify({
             'status': 'generating',
             'progress': 0,
@@ -2774,31 +2802,97 @@ def generate_video():
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 
+def _start_skeleton_video_gen(vrs_path, skeleton_mp4_path, cache_dir, stem, mps_dir):
+    """Start skeleton video generation as a background subprocess."""
+    global _skeleton_video_generating, _skeleton_video_progress, _skeleton_video_progress_file, _skeleton_video_gen_proc
+    import subprocess
+
+    _skeleton_video_generating = True
+    _skeleton_video_progress = 0
+
+    os.makedirs(cache_dir, exist_ok=True)
+    _skeleton_video_progress_file = os.path.join(cache_dir, f'{stem}_skeleton_progress.txt')
+    with open(_skeleton_video_progress_file, 'w') as f:
+        f.write('0')
+
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'generate_mp4.py')
+    python_path = sys.executable
+    _skeleton_video_gen_proc = subprocess.Popen(
+        [python_path, script_path, vrs_path, skeleton_mp4_path, _skeleton_video_progress_file,
+         '--skeleton', '--mps-dir', mps_dir],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    print(f"[generate_video] Started skeleton MP4 generation subprocess: {skeleton_mp4_path}")
+
+    def _monitor_skeleton():
+        global _skeleton_video_generating, _skeleton_video_cached_path, _skeleton_video_gen_proc
+        try:
+            stdout, _ = _skeleton_video_gen_proc.communicate()
+            if stdout:
+                print(stdout.decode(errors='replace'))
+            if _skeleton_video_gen_proc.returncode == 0 and os.path.exists(skeleton_mp4_path):
+                _skeleton_video_cached_path = skeleton_mp4_path
+                print(f"[generate_video] Skeleton MP4 subprocess completed successfully")
+            else:
+                print(f"[generate_video] Skeleton MP4 subprocess failed with code {_skeleton_video_gen_proc.returncode}")
+        except Exception as e:
+            print(f"[generate_video] Skeleton monitor error: {e}")
+        finally:
+            _skeleton_video_generating = False
+            _skeleton_video_gen_proc = None
+
+    monitor_thread = threading.Thread(target=_monitor_skeleton, daemon=True)
+    monitor_thread.start()
+
+
 @app.route('/gripper/video_progress', methods=['GET'])
 def video_progress():
-    """Check MP4 video generation progress."""
+    """Check MP4 video generation progress (both plain and skeleton)."""
     global _video_generating, _video_progress, _video_cached_path, _video_progress_file
+    global _skeleton_video_generating, _skeleton_video_progress, _skeleton_video_cached_path, _skeleton_video_progress_file
+
+    result = {}
+
     if _video_cached_path and os.path.exists(_video_cached_path):
         duration_s = (_vrs_time_range_ns[1] - _vrs_time_range_ns[0]) / 1e9
         fps = _vrs_num_frames / duration_s if duration_s > 0 else 30
-        return jsonify({
+        result.update({
             'status': 'done',
             'progress': 100,
             'video_url': f'/gripper/serve_video?path={_video_cached_path}',
             'fps': round(fps, 2),
             'duration_s': round(duration_s, 3)
         })
-    # Read progress from subprocess progress file
-    if _video_progress_file and os.path.exists(_video_progress_file):
-        try:
-            with open(_video_progress_file, 'r') as f:
-                _video_progress = int(f.read().strip())
-        except (ValueError, IOError):
-            pass
-    return jsonify({
-        'status': 'generating' if _video_generating else 'idle',
-        'progress': _video_progress
-    })
+    else:
+        # Read progress from subprocess progress file
+        if _video_progress_file and os.path.exists(_video_progress_file):
+            try:
+                with open(_video_progress_file, 'r') as f:
+                    _video_progress = int(f.read().strip())
+            except (ValueError, IOError):
+                pass
+        result.update({
+            'status': 'generating' if _video_generating else 'idle',
+            'progress': _video_progress
+        })
+
+    # Add skeleton video status
+    if _skeleton_video_cached_path and os.path.exists(_skeleton_video_cached_path):
+        result['skeleton_video_url'] = f'/gripper/serve_video?path={_skeleton_video_cached_path}'
+        result['skeleton_status'] = 'done'
+        result['skeleton_progress'] = 100
+    elif _skeleton_video_generating:
+        # Read skeleton progress
+        if _skeleton_video_progress_file and os.path.exists(_skeleton_video_progress_file):
+            try:
+                with open(_skeleton_video_progress_file, 'r') as f:
+                    _skeleton_video_progress = int(f.read().strip())
+            except (ValueError, IOError):
+                pass
+        result['skeleton_status'] = 'generating'
+        result['skeleton_progress'] = _skeleton_video_progress
+
+    return jsonify(result)
 
 
 @app.route('/gripper/serve_video', methods=['GET'])

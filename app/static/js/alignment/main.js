@@ -1542,6 +1542,8 @@ let vrsDuration = 0;
 let vrsFrameLoading = false;
 let vrsVideoMode = 'frame'; // 'frame' = per-frame <img>, 'video' = MP4 <video>
 let vrsVideoFPS = 30;
+let vrsSkeletonVideoUrl = null; // URL to skeleton overlay MP4
+let vrsPlainVideoUrl = null;    // URL to plain (no skeleton) MP4
 
 // Frame pre-cache: Map<frameIndex, blobUrl>
 const vrsFrameCache = new Map();
@@ -1614,6 +1616,7 @@ async function initVRSSessionFromPath(vrsPath) {
  */
 async function generateAndLoadVideo(vrsPath) {
     const progressEl = document.getElementById('vrs-video-gen-progress');
+    const mpsDir = getMpsDir();
 
     try {
         // Show progress immediately
@@ -1622,17 +1625,34 @@ async function generateAndLoadVideo(vrsPath) {
             progressEl.innerHTML = '生成视频中... <span id="video-gen-percent">0</span>%';
         }
 
+        const reqBody = { vrs_path: vrsPath };
+        if (mpsDir) reqBody.mps_dir = mpsDir;
+
         const response = await fetch('/gripper/generate_video', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vrs_path: vrsPath })
+            body: JSON.stringify(reqBody)
         });
         const result = await response.json();
 
         if (result.video_url) {
             // MP4 already cached — load immediately
             if (progressEl) progressEl.style.display = 'none';
-            _switchToVideoMode(result.video_url, result.fps);
+            vrsPlainVideoUrl = result.video_url;
+            if (result.skeleton_video_url) {
+                vrsSkeletonVideoUrl = result.skeleton_video_url;
+            }
+            // Use skeleton video if skeleton checkbox is checked and available
+            const skeletonCb = document.getElementById('show-hand-skeleton');
+            if (skeletonCb && skeletonCb.checked && vrsSkeletonVideoUrl) {
+                _switchToVideoMode(vrsSkeletonVideoUrl, result.fps);
+            } else {
+                _switchToVideoMode(result.video_url, result.fps);
+            }
+            // If skeleton video is still generating, start polling for it
+            if (result.skeleton_status === 'generating') {
+                _pollSkeletonVideoProgress();
+            }
             return;
         }
 
@@ -1653,12 +1673,42 @@ async function generateAndLoadVideo(vrsPath) {
                     const pr = await fetch('/gripper/video_progress');
                     const pg = await pr.json();
                     const pEl = document.getElementById('video-gen-percent');
-                    if (pEl) pEl.textContent = pg.progress;
+
+                    // Show skeleton progress if plain is done and skeleton is generating
+                    if (pg.status === 'done' && pg.skeleton_status === 'generating') {
+                        if (pEl) pEl.textContent = `100 (骨架: ${pg.skeleton_progress || 0}%)`;
+                    } else {
+                        if (pEl) pEl.textContent = pg.progress;
+                    }
 
                     if (pg.status === 'done' && pg.video_url) {
-                        clearInterval(pollInterval);
-                        if (progressEl) progressEl.style.display = 'none';
-                        _switchToVideoMode(pg.video_url, pg.fps);
+                        vrsPlainVideoUrl = pg.video_url;
+                        if (pg.skeleton_video_url) {
+                            vrsSkeletonVideoUrl = pg.skeleton_video_url;
+                        }
+
+                        // If skeleton is still generating, keep polling for it in background
+                        if (pg.skeleton_status === 'generating') {
+                            // Switch to plain video first
+                            clearInterval(pollInterval);
+                            if (progressEl) {
+                                progressEl.innerHTML = '骨架视频生成中... <span id="video-gen-percent">0</span>%';
+                            }
+                            const skeletonCb = document.getElementById('show-hand-skeleton');
+                            if (!(skeletonCb && skeletonCb.checked)) {
+                                _switchToVideoMode(pg.video_url, pg.fps);
+                            }
+                            _pollSkeletonVideoProgress();
+                        } else {
+                            clearInterval(pollInterval);
+                            if (progressEl) progressEl.style.display = 'none';
+                            const skeletonCb = document.getElementById('show-hand-skeleton');
+                            if (skeletonCb && skeletonCb.checked && vrsSkeletonVideoUrl) {
+                                _switchToVideoMode(vrsSkeletonVideoUrl, pg.fps);
+                            } else {
+                                _switchToVideoMode(pg.video_url, pg.fps);
+                            }
+                        }
                     } else if (pg.status === 'idle') {
                         clearInterval(pollInterval);
                         console.log('[video] MP4 generation idle, stopping poll');
@@ -1676,20 +1726,54 @@ async function generateAndLoadVideo(vrsPath) {
     }
 }
 
+function _pollSkeletonVideoProgress() {
+    const progressEl = document.getElementById('vrs-video-gen-progress');
+    let pollCount = 0;
+    const maxPolls = 600;
+
+    const pollInterval = setInterval(async () => {
+        pollCount++;
+        if (pollCount > maxPolls) {
+            clearInterval(pollInterval);
+            if (progressEl) progressEl.style.display = 'none';
+            return;
+        }
+        try {
+            const pr = await fetch('/gripper/video_progress');
+            const pg = await pr.json();
+            const pEl = document.getElementById('video-gen-percent');
+
+            if (pg.skeleton_video_url) {
+                vrsSkeletonVideoUrl = pg.skeleton_video_url;
+                clearInterval(pollInterval);
+                if (progressEl) progressEl.style.display = 'none';
+                console.log('[video] Skeleton MP4 ready:', vrsSkeletonVideoUrl);
+                // If skeleton checkbox is checked, switch to skeleton video now
+                const skeletonCb = document.getElementById('show-hand-skeleton');
+                if (skeletonCb && skeletonCb.checked) {
+                    _switchToVideoMode(vrsSkeletonVideoUrl, pg.fps || vrsVideoFPS);
+                }
+            } else if (pg.skeleton_status === 'generating') {
+                if (progressEl) {
+                    progressEl.style.display = 'block';
+                    progressEl.innerHTML = `骨架视频生成中... <span id="video-gen-percent">${pg.skeleton_progress || 0}</span>%`;
+                }
+            } else {
+                // Skeleton generation not running
+                clearInterval(pollInterval);
+                if (progressEl) progressEl.style.display = 'none';
+            }
+        } catch (e) {
+            console.error('Skeleton video progress poll error:', e);
+            clearInterval(pollInterval);
+        }
+    }, 2000);
+}
+
 function _switchToVideoMode(videoUrl, fps) {
     const videoEl = document.getElementById('vrs-video-element');
     const imgEl = document.getElementById('vrs-video-frame');
     if (!videoEl) return;
-
-    // Check if skeleton mode is active — if so, don't switch yet
-    const skeletonCheckbox = document.getElementById('show-hand-skeleton');
-    if (skeletonCheckbox && skeletonCheckbox.checked) {
-        // Store URL for when skeleton is unchecked
-        videoEl.dataset.pendingUrl = videoUrl;
-        videoEl.dataset.pendingFps = fps;
-        console.log('[video] MP4 ready but skeleton mode active, deferring switch');
-        return;
-    }
 
     vrsVideoMode = 'video';
     vrsVideoFPS = fps || 30;
@@ -1911,49 +1995,58 @@ function initVRSVideoPlayer() {
         });
     }
 
-    // Skeleton toggle: switch between video and per-frame mode
+    // Skeleton toggle: switch between skeleton MP4 and plain MP4
     const skeletonCheckbox = document.getElementById('show-hand-skeleton');
     if (skeletonCheckbox) {
         skeletonCheckbox.addEventListener('change', function () {
             const videoEl = document.getElementById('vrs-video-element');
             const imgEl = document.getElementById('vrs-video-frame');
+            const wasPlaying = vrsVideoPlaying;
+
             if (this.checked) {
-                // Switch to per-frame skeleton mode
-                if (vrsVideoMode === 'video' && videoEl) {
-                    vrsCurrentTime = videoEl.currentTime || vrsCurrentTime;
-                    videoEl.pause();
-                    videoEl.style.display = 'none';
-                }
-                if (imgEl) imgEl.style.display = 'block';
-                vrsVideoMode = 'frame';
-                if (vrsVideoPlaying) {
-                    pauseVRSVideo();
-                    const pb = document.getElementById('video-play-btn');
-                    if (pb) pb.textContent = '▶ 播放';
-                }
-                vrsFrameLoading = false;
-                updateVRSVideoFrame(vrsCurrentTime);
-            } else {
-                // Switch back to video mode if MP4 is available
-                if (videoEl && (videoEl.src || videoEl.dataset.pendingUrl)) {
-                    const pendingUrl = videoEl.dataset.pendingUrl;
-                    if (pendingUrl) {
-                        _switchToVideoMode(pendingUrl, parseFloat(videoEl.dataset.pendingFps) || 30);
-                        delete videoEl.dataset.pendingUrl;
-                        delete videoEl.dataset.pendingFps;
-                    } else if (videoEl.src) {
-                        // Video already loaded, just show it
-                        videoEl.style.display = 'block';
-                        vrsVideoMode = 'video';
-                        videoEl.currentTime = vrsCurrentTime;
-                        // Hide img only after video is seeked
-                        videoEl.onseeked = function () {
-                            if (imgEl) imgEl.style.display = 'none';
-                            videoEl.onseeked = null;
-                        };
+                // Switch to skeleton MP4 if available, otherwise fall back to per-frame
+                if (vrsSkeletonVideoUrl) {
+                    // Save current time from video
+                    if (vrsVideoMode === 'video' && videoEl) {
+                        vrsCurrentTime = videoEl.currentTime || vrsCurrentTime;
+                        videoEl.pause();
+                    }
+                    _switchToVideoMode(vrsSkeletonVideoUrl, vrsVideoFPS);
+                    if (wasPlaying && videoEl) {
+                        videoEl.playbackRate = vrsPlaybackSpeed;
+                        videoEl.play();
                     }
                 } else {
-                    // No MP4, stay in frame mode but without skeleton
+                    // No skeleton MP4 yet — fall back to per-frame mode
+                    if (vrsVideoMode === 'video' && videoEl) {
+                        vrsCurrentTime = videoEl.currentTime || vrsCurrentTime;
+                        videoEl.pause();
+                        videoEl.style.display = 'none';
+                    }
+                    if (imgEl) imgEl.style.display = 'block';
+                    vrsVideoMode = 'frame';
+                    if (vrsVideoPlaying) {
+                        pauseVRSVideo();
+                        const pb = document.getElementById('video-play-btn');
+                        if (pb) pb.textContent = '▶ 播放';
+                    }
+                    vrsFrameLoading = false;
+                    updateVRSVideoFrame(vrsCurrentTime);
+                }
+            } else {
+                // Switch back to plain MP4
+                if (vrsPlainVideoUrl) {
+                    if (vrsVideoMode === 'video' && videoEl) {
+                        vrsCurrentTime = videoEl.currentTime || vrsCurrentTime;
+                        videoEl.pause();
+                    }
+                    _switchToVideoMode(vrsPlainVideoUrl, vrsVideoFPS);
+                    if (wasPlaying && videoEl) {
+                        videoEl.playbackRate = vrsPlaybackSpeed;
+                        videoEl.play();
+                    }
+                } else {
+                    // No MP4 at all, stay in frame mode
                     vrsFrameLoading = false;
                     updateVRSVideoFrame(vrsCurrentTime);
                 }
@@ -2212,6 +2305,7 @@ async function startConversion() {
 
     const currentOffset = parseFloat(offsetSlider?.value) || optimalOffset || 0;
     const taskName = document.getElementById('lerobot-task-name')?.value || 'aria_recording';
+    const pathFormat = document.getElementById('lerobot-path-format')?.value || 'groot';
 
     // Remind user to set a meaningful task name for GR00T
     if (taskName === 'aria_recording') {
@@ -2261,6 +2355,7 @@ async function startConversion() {
                 haptic_offset: currentOffset,
                 output_dir: outputDir,
                 task_name: taskName,
+                path_format: pathFormat,
                 segments: segmentData,
             })
         });
