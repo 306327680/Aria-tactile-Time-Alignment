@@ -209,6 +209,8 @@
         .status-badge.calibrated { background: #c8e6c9; color: #2e7d32; }
         .status-badge.missing { background: #ffcdd2; color: #c62828; }
         .status-badge.partial { background: #e1bee7; color: #7b1fa2; }
+        .status-badge.segmented { background: #b3e5fc; color: #0277bd; }
+        .status-badge.converted { background: #a5d6a7; color: #1b5e20; border: 1px solid #66bb6a; }
 
         .data-card-actions {
             padding: 15px;
@@ -500,6 +502,7 @@
             // Subdirectories
             subdirs.forEach(dir => {
                 const mpsInfo = dir.mps_count > 0 ? `, ${dir.mps_count} MPS` : '';
+                const lerobotInfo = dir.lerobot_count > 0 ? ` · ${dir.lerobot_count} 已转换` : '';
                 html += `
                     <div class="folder-item" onclick="loadFiles('${dir.path}')" data-path="${dir.path}">
                         <div class="folder-name">
@@ -507,7 +510,7 @@
                             <span>${dir.name}</span>
                         </div>
                         <div class="folder-stats">
-                            ${dir.vrs_count} VRS, ${dir.csv_count} CSV${mpsInfo}
+                            ${dir.vrs_count} VRS, ${dir.csv_count} CSV${mpsInfo}${lerobotInfo}
                         </div>
                     </div>
                 `;
@@ -576,9 +579,15 @@
                 const hasMps = group.mps_folder !== null;
                 const isReady = (hasVrs || hasMps) && hasCsv;
                 const hasOffset = group.offset_config !== null && group.offset_config !== undefined;
+                const hasSegments = group.segments && group.segments.total > 0;
+                const hasConversion = group.conversion && group.conversion.has_info;
 
                 let statusBadge = '';
-                if (hasOffset) {
+                if (hasConversion) {
+                    statusBadge = '<span class="status-badge converted">已转换</span>';
+                } else if (hasSegments) {
+                    statusBadge = '<span class="status-badge segmented">已分段</span>';
+                } else if (hasOffset) {
                     statusBadge = '<span class="status-badge calibrated">已标定</span>';
                 } else if (isReady) {
                     statusBadge = '<span class="status-badge ready">待标定</span>';
@@ -670,6 +679,47 @@
                             ${similarityStr ? `<span class="similarity-value">相似度: ${similarityStr}</span>` : ''}
                         </div>
                     `;
+                }
+
+                // Segments info (if exists)
+                if (group.segments && group.segments.total > 0) {
+                    html += `
+                        <div class="offset-info segments-info">
+                            <span class="offset-icon">✂️</span>
+                            <span class="offset-label">分段:</span>
+                            <span class="offset-value">${group.segments.enabled}/${group.segments.total} 段</span>
+                        </div>
+                    `;
+                }
+
+                // Conversion info (if exists)
+                if (group.conversion) {
+                    if (group.conversion.has_info) {
+                        const ep = group.conversion.total_episodes || 0;
+                        const frames = group.conversion.total_frames || 0;
+                        const pq = group.conversion.parquet_files || 0;
+                        const vid = group.conversion.video_files || 0;
+                        const fps = group.conversion.fps ? group.conversion.fps.toFixed(1) : '--';
+                        html += `
+                            <div class="offset-info conversion-info">
+                                <span class="offset-icon">📦</span>
+                                <span class="offset-label">LeRobot:</span>
+                                <span class="offset-value">${ep} 集 · ${frames} 帧</span>
+                            </div>
+                            <div class="offset-info conversion-detail">
+                                <span class="offset-icon" style="visibility:hidden">📦</span>
+                                <span class="offset-value" style="font-size:0.75rem; color:#888;">${pq} parquet · ${vid} mp4 · ${fps} fps</span>
+                            </div>
+                        `;
+                    } else {
+                        html += `
+                            <div class="offset-info conversion-info">
+                                <span class="offset-icon">📦</span>
+                                <span class="offset-label">LeRobot:</span>
+                                <span class="offset-value" style="color:#d9534f;">输出目录存在但无 info.json</span>
+                            </div>
+                        `;
+                    }
                 }
 
                 html += `

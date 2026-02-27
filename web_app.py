@@ -1653,6 +1653,65 @@ def scan_data_directory(directory):
                         data_groups[base_name]['hand_tracking_file'] = str(hand_tracking_file)
                     break
 
+    # Scan for segments CSV files in alignment_configs/
+    config_dir = directory / 'alignment_configs'
+    if config_dir.exists():
+        for seg_file in config_dir.glob('*_segments.csv'):
+            seg_name = seg_file.stem  # e.g. "Jelly_1_20260110_110921_segments"
+            # Try to match to a data group
+            for base_name in data_groups:
+                if seg_name.lower().startswith(base_name.lower()):
+                    try:
+                        with open(seg_file, 'r') as sf:
+                            lines = sf.readlines()
+                            # Skip header, count data rows
+                            total = 0
+                            enabled = 0
+                            for line in lines[1:]:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                total += 1
+                                parts = line.split(',')
+                                if len(parts) >= 5 and parts[4].strip().lower() == 'true':
+                                    enabled += 1
+                        data_groups[base_name]['segments'] = {
+                            'total': total,
+                            'enabled': enabled,
+                            'path': str(seg_file),
+                        }
+                    except Exception:
+                        data_groups[base_name]['segments'] = {
+                            'total': 0, 'enabled': 0, 'path': str(seg_file),
+                        }
+                    break
+
+    # Scan for LeRobot conversion output directories ({base_name}_lerobot/)
+    for base_name in data_groups:
+        lerobot_dir = directory / f'{base_name}_lerobot'
+        if lerobot_dir.is_dir():
+            info_path = lerobot_dir / 'meta' / 'info.json'
+            conv_info = {
+                'output_dir': str(lerobot_dir),
+                'has_info': False,
+            }
+            if info_path.exists():
+                try:
+                    with open(info_path, 'r') as f:
+                        info = json.load(f)
+                    conv_info['has_info'] = True
+                    conv_info['total_episodes'] = info.get('total_episodes', 0)
+                    conv_info['total_frames'] = info.get('total_frames', 0)
+                    conv_info['fps'] = info.get('fps')
+                    # Count actual files
+                    parquet_dir = lerobot_dir / 'data' / 'chunk-000'
+                    video_dir = lerobot_dir / 'videos' / 'chunk-000' / 'observation.images.main'
+                    conv_info['parquet_files'] = len(list(parquet_dir.glob('*.parquet'))) if parquet_dir.exists() else 0
+                    conv_info['video_files'] = len(list(video_dir.glob('*.mp4'))) if video_dir.exists() else 0
+                except Exception:
+                    pass
+            data_groups[base_name]['conversion'] = conv_info
+
     result = list(data_groups.values())
     result.sort(key=lambda x: x['name'])
     return result
@@ -1671,6 +1730,7 @@ def scan_subdirectories(root_dir):
             vrs_count = len(list(item.glob('*.vrs')))
             csv_count = len(list(item.glob('*.csv')))
             mps_count = len(list(item.glob('mps_*')))
+            lerobot_count = len(list(item.glob('*_lerobot')))
 
             if vrs_count > 0 or csv_count > 0:
                 subdirs.append({
@@ -1678,7 +1738,8 @@ def scan_subdirectories(root_dir):
                     'path': str(item),
                     'vrs_count': vrs_count,
                     'csv_count': csv_count,
-                    'mps_count': mps_count
+                    'mps_count': mps_count,
+                    'lerobot_count': lerobot_count
                 })
 
     return subdirs
@@ -2229,12 +2290,40 @@ def init_vrs():
     """Initialize VRS session for video frame extraction"""
     global _vrs_provider, _vrs_path, _vrs_cameras, _vrs_time_range_ns, _vrs_num_frames, _vrs_rgb_stream_id
     global _frame_cache, _video_cached_path
+    global _video_generating, _video_progress, _video_progress_file, _video_gen_proc
+    global _skeleton_video_generating, _skeleton_video_progress, _skeleton_video_cached_path
+    global _skeleton_video_progress_file, _skeleton_video_gen_proc
+    global _aria_rgb_h_orig
 
     print("[init_vrs] VRS_PROVIDER_AVAILABLE:", VRS_PROVIDER_AVAILABLE)
 
     # Clear caches when switching VRS files
     _frame_cache.clear()
     _video_cached_path = None
+
+    # Kill any in-progress video generation subprocesses
+    if _video_gen_proc is not None:
+        try:
+            _video_gen_proc.kill()
+        except Exception:
+            pass
+        _video_gen_proc = None
+    _video_generating = False
+    _video_progress = 0
+    _video_progress_file = None
+
+    if _skeleton_video_gen_proc is not None:
+        try:
+            _skeleton_video_gen_proc.kill()
+        except Exception:
+            pass
+        _skeleton_video_gen_proc = None
+    _skeleton_video_generating = False
+    _skeleton_video_progress = 0
+    _skeleton_video_cached_path = None
+    _skeleton_video_progress_file = None
+
+    _aria_rgb_h_orig = None
 
     if not VRS_PROVIDER_AVAILABLE:
         return jsonify({'error': 'projectaria_tools not available', 'available': False}), 400

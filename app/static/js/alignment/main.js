@@ -169,8 +169,95 @@ async function loadDirectories() {
     }
 }
 
+// Reset all state when switching datasets
+function resetAllState() {
+    // Stop video playback
+    if (vrsVideoInitialized) {
+        pauseVRSVideo();
+    }
+
+    // Abort any in-progress prefetch
+    if (vrsPrefetchAbort) {
+        vrsPrefetchAbort.abort();
+        vrsPrefetchAbort = null;
+    }
+
+    // Revoke all cached blob URLs and clear cache
+    vrsFrameCache.forEach(blobUrl => URL.revokeObjectURL(blobUrl));
+    vrsFrameCache.clear();
+
+    // Clear <video> element
+    const videoEl = document.getElementById('vrs-video-element');
+    if (videoEl) {
+        videoEl.pause();
+        videoEl.removeAttribute('src');
+        videoEl.load();
+        videoEl.style.display = 'none';
+    }
+
+    // Clear <img> frame element
+    const frameEl = document.getElementById('vrs-video-frame');
+    if (frameEl) {
+        if (frameEl.src && frameEl.src.startsWith('blob:')) {
+            URL.revokeObjectURL(frameEl.src);
+        }
+        frameEl.removeAttribute('src');
+    }
+
+    // Hide video panel and progress
+    const videoPanel = document.getElementById('vrs-video-panel');
+    if (videoPanel) videoPanel.style.display = 'none';
+    const progressEl = document.getElementById('vrs-video-gen-progress');
+    if (progressEl) progressEl.style.display = 'none';
+
+    // Reset VRS state variables
+    vrsVideoInitialized = false;
+    _vrsInitializedPath = null;
+    vrsPlainVideoUrl = null;
+    vrsSkeletonVideoUrl = null;
+    vrsVideoMode = 'frame';
+    vrsVideoFPS = 30;
+    vrsCurrentTime = 0;
+    vrsTimeRange = [0, 100];
+    vrsNumFrames = 0;
+    vrsDuration = 0;
+    vrsVideoPlaying = false;
+    vrsFrameLoading = false;
+    vrsPrefetchDone = false;
+
+    // Reset alignment state
+    cachedData = null;
+    optimalOffset = null;
+    forceSegments = [];
+    originalSegments = [];
+    segmentsCSV = null;
+
+    // Clear server paths
+    window.serverMpsPath = null;
+    window.serverHapticPath = null;
+    window.serverVrsPath = null;
+
+    // Hide UI panels
+    if (resultsSection) resultsSection.style.display = 'none';
+    if (errorSection) errorSection.style.display = 'none';
+    if (downloadSection) downloadSection.style.display = 'none';
+
+    // Purge Plotly chart
+    const chartDiv = document.getElementById('plotly-chart');
+    if (chartDiv && typeof Plotly !== 'undefined') {
+        Plotly.purge(chartDiv);
+    }
+
+    // Hide saved alignment banner
+    const banner = document.getElementById('saved-alignment-banner');
+    if (banner) banner.style.display = 'none';
+}
+
 // Load files for selected directory
 async function loadFiles(directory) {
+    // Reset all previous state when switching datasets
+    resetAllState();
+
     if (!directory) {
         mpsSelect.innerHTML = '<option value="">-- 请先选择目录 --</option>';
         hapticSelect.innerHTML = '<option value="">-- 请先选择目录 --</option>';
@@ -430,7 +517,7 @@ async function loadSavedAlignment() {
         _applySavedOffset(config);
 
         // Initialize VRS video if VRS selected
-        if (vrsSelect.value && !vrsVideoInitialized) {
+        if (vrsSelect.value) {
             await initVRSSessionFromPath(vrsSelect.value);
         }
     } catch (error) {
@@ -499,7 +586,7 @@ async function loadCachedAlignment() {
         _applySavedOffset(config);
 
         // Initialize VRS video if VRS selected
-        if (vrsSelect.value && !vrsVideoInitialized) {
+        if (vrsSelect.value) {
             await initVRSSessionFromPath(vrsSelect.value);
         }
     } catch (error) {
@@ -573,7 +660,7 @@ alignBtn.addEventListener('click', async function () {
         displayResults(data);
 
         // Initialize VRS video if VRS selected
-        if (vrsSelect.value && !vrsVideoInitialized) {
+        if (vrsSelect.value) {
             await initVRSSessionFromPath(vrsSelect.value);
         }
     } catch (error) {
