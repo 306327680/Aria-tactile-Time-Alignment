@@ -47,6 +47,9 @@ instance/
 .env
 .env.local
 
+# Claude Code
+.claude/
+
 # Temporary files
 *.tmp
 *.log
