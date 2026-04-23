@@ -702,22 +702,25 @@ function displayResults(data) {
     // Generate CSV from force segments
     updateSegmentsCSV();
 
-    // Auto-fill output directory: /mnt/zyl/data/IROS_data/Lerobot/{base_name}
+    // Auto-fill output directory: {VRS所在目录}/{VRS名}_lerobot
     const outputDirInput = document.getElementById('lerobot-output-dir');
     if (outputDirInput && !outputDirInput.value) {
-        let baseName = '';
+        let outputDir = '';
         if (window.serverVrsPath) {
-            // Extract base name from VRS path: /mnt/.../Half_coke_0.vrs → Half_coke_0
-            const vrsFile = window.serverVrsPath.split('/').pop();
-            baseName = vrsFile.replace(/\.vrs$/, '');
+            const parts = window.serverVrsPath.split('/');
+            const vrsFile = parts.pop();
+            const vrsDir = parts.join('/');
+            const baseName = vrsFile.replace(/\.vrs$/, '');
+            outputDir = vrsDir + '/' + baseName + '_lerobot';
         } else if (window.serverHapticPath) {
-            // Fallback: extract from haptic CSV: Half_coke_0_20260110_155330.csv → Half_coke_0
-            const csvFile = window.serverHapticPath.split('/').pop().replace(/\.csv$/, '');
-            // Remove timestamp suffix (_YYYYMMDD_HHMMSS)
-            baseName = csvFile.replace(/_\d{8}_\d{6}$/, '');
+            const parts = window.serverHapticPath.split('/');
+            const csvFile = parts.pop().replace(/\.csv$/, '');
+            const csvDir = parts.join('/');
+            const baseName = csvFile.replace(/_\d{8}_\d{6}$/, '');
+            outputDir = csvDir + '/' + baseName + '_lerobot';
         }
-        if (baseName) {
-            outputDirInput.value = '/mnt/zyl/data/IROS_data/Lerobot/' + baseName;
+        if (outputDir) {
+            outputDirInput.value = outputDir;
             updateLeRobotCLI();
         }
     }
@@ -2545,6 +2548,10 @@ function showConversionResults(data) {
                 style="padding:2px 8px; border:1px solid #28a745; background:white; color:#28a745; border-radius:4px; cursor:pointer; font-size:0.7rem; white-space:nowrap;">
             Copy
         </button>
+        <a href="/lerobot-viewer?dir=${encodeURIComponent(outputDir)}" target="_blank"
+           style="padding:2px 8px; border:1px solid #48bb78; background:#48bb78; color:white; border-radius:4px; cursor:pointer; font-size:0.7rem; white-space:nowrap; text-decoration:none;">
+            📊 查看数据
+        </a>
     </div>`;
 
     panel.innerHTML = html;

@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeRobot 数据查看器</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=12">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+
+        body { background: #f0f2f8; }
+
+        /* ── Top bar ─────────────────────────────────────────────── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+        .page-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #2d3748;
+            white-space: nowrap;
+        }
+        .dir-tag {
+            font-size: 0.72rem;
+            color: #667eea;
+            background: #eef0ff;
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-family: monospace;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 480px;
+        }
+        .nav-btns { display: flex; gap: 8px; }
+        .nav-btn {
+            padding: 7px 16px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1.5px solid #667eea;
+            border-radius: 6px;
+            color: #667eea;
+            background: white;
+            text-decoration: none;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .nav-btn:hover { background: #667eea; color: white; }
+
+        /* ── Grid layout ─────────────────────────────────────────── */
+        .viewer-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 12px;
+            height: calc(100vh - 100px);
+            min-height: 520px;
+        }
+
+        /* ── Episode panel ───────────────────────────────────────── */
+        .ep-panel {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .ep-panel-header {
+            padding: 10px 12px 8px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid #eef0f6;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .ep-count-badge {
+            background: #eef0ff;
+            color: #667eea;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-family: monospace;
+        }
+        .ep-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        .ep-list::-webkit-scrollbar { width: 4px; }
+        .ep-list::-webkit-scrollbar-thumb { background: #d0d5e8; border-radius: 4px; }
+        .ep-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            border-bottom: 1px solid #f5f6fa;
+            transition: background 0.12s, border-color 0.12s;
+            gap: 6px;
+        }
+        .ep-item:hover { background: #f5f7ff; }
+        .ep-item.active {
+            background: #f0f3ff;
+            border-left-color: #667eea;
+        }
+        .ep-item-id {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        .ep-item.active .ep-item-id { color: #667eea; }
+        .ep-item-frames {
+            font-size: 0.68rem;
+            color: #a0aec0;
+            font-family: monospace;
+            flex-shrink: 0;
+        }
+        .ep-item.active .ep-item-frames { color: #9aa8e0; }
+
+        /* ── Main panel ──────────────────────────────────────────── */
+        .main-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        /* ── Video card ──────────────────────────────────────────── */
+        .video-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            padding: 14px;
+            flex-shrink: 0;
+        }
+        .video-row {
+            display: flex;
+            gap: 16px;
+            align-items: stretch;
+        }
+        .video-box {
+            flex-shrink: 0;
+            width: 280px;
+            height: 280px;
+            background: #111;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        video#episode-video {
+            max-width: 280px;
+            max-height: 280px;
+            width: auto;
+            height: auto;
+            display: block;
+        }
+        .video-side {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            min-width: 0;
+        }
+
+        /* Stats row */
+        .stats-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .stat-card {
+            width: 76px;
+            flex-shrink: 0;
+            background: #f8f9ff;
+            border: 1px solid #eef0ff;
+            border-radius: 8px;
+            padding: 10px 8px;
+            text-align: center;
+        }
+        .stat-val {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #667eea;
+            line-height: 1;
+        }
+        .stat-lbl {
+            font-size: 0.65rem;
+            color: #a0aec0;
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Controls */
+        .ctrl-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .ctrl-btn {
+            padding: 7px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-weight: 600;
+            transition: all 0.18s;
+        }
+        .play-btn { background: #667eea; color: white; }
+        .play-btn:hover { background: #5568d9; }
+        .stop-btn { background: #edf2f7; color: #4a5568; }
+        .stop-btn:hover { background: #e2e8f0; }
+        .speed-select {
+            padding: 6px 10px;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            color: #4a5568;
+            background: white;
+            cursor: pointer;
+        }
+        .frame-badge {
+            font-size: 0.78rem;
+            color: #718096;
+            font-family: monospace;
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        /* Progress bar */
+        .progress-wrap {
+            position: relative;
+            height: 10px;
+            background: #edf2f7;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: height 0.15s;
+        }
+        .progress-wrap:hover { height: 14px; }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #9f7aea);
+            border-radius: 5px;
+            transition: width 0.06s linear;
+            pointer-events: none;
+        }
+        .progress-thumb {
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translate(50%, -50%);
+            width: 14px;
+            height: 14px;
+            background: #667eea;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+            pointer-events: none;
+            display: none;
+        }
+        .progress-wrap:hover .progress-thumb { display: block; }
+
+        /* ── Chart card ──────────────────────────────────────────── */
+        .chart-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            padding: 14px;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        .chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            flex-shrink: 0;
+        }
+        .chart-title {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .chart-legend-hint {
+            display: flex;
+            gap: 12px;
+            font-size: 0.7rem;
+            color: #a0aec0;
+        }
+        .legend-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        #force-chart {
+            flex: 1;
+            min-height: 200px;
+        }
+
+        /* ── Loading / empty ─────────────────────────────────────── */
+        .loading-state, .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #cbd5e0;
+            font-size: 0.85rem;
+            height: 100%;
+            gap: 8px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <!-- Top bar -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <span class="page-title">📊 LeRobot 数据查看器</span>
+            <span class="dir-tag" id="dir-display">加载中...</span>
+        </div>
+        <div class="nav-btns">
+            <a href="/data" class="nav-btn">📁 数据管理</a>
+            <a href="/" class="nav-btn">🎯 对齐工具</a>
+        </div>
+    </div>
+
+    <!-- Main grid -->
+    <div class="viewer-grid">
+
+        <!-- Episode list -->
+        <div class="ep-panel">
+            <div class="ep-panel-header">
+                <span>Episodes</span>
+                <span class="ep-count-badge" id="episode-count">—</span>
+            </div>
+            <div class="ep-list" id="episode-list">
+                <div class="loading-state">加载中...</div>
+            </div>
+        </div>
+
+        <!-- Main panel -->
+        <div class="main-panel">
+
+            <!-- Video card -->
+            <div class="video-card">
+                <div class="video-row">
+
+                    <!-- Video -->
+                    <div class="video-box">
+                        <video id="episode-video" preload="auto"></video>
+                    </div>
+
+                    <!-- Right side: stats + controls -->
+                    <div class="video-side">
+
+                        <!-- Stats -->
+                        <div class="stats-row">
+                            <div class="stat-card">
+                                <div class="stat-val" id="info-ep">—</div>
+                                <div class="stat-lbl">Episode</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-val" id="info-frames">—</div>
+                                <div class="stat-lbl">Frames</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-val" id="info-fps">—</div>
+                                <div class="stat-lbl">FPS</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-val" id="info-duration">—</div>
+                                <div class="stat-lbl">时长 s</div>
+                            </div>
+                        </div>
+
+                        <!-- Controls -->
+                        <div class="ctrl-row">
+                            <button class="ctrl-btn play-btn" id="play-btn" onclick="togglePlay()">▶ 播放</button>
+                            <button class="ctrl-btn stop-btn" onclick="stopVideo()">⏹ 停止</button>
+                            <select class="speed-select" id="speed-select" onchange="changeSpeed()">
+                                <option value="0.25">0.25×</option>
+                                <option value="0.5">0.5×</option>
+                                <option value="1" selected>1×</option>
+                                <option value="2">2×</option>
+                            </select>
+                            <span class="frame-badge" id="frame-info">帧 0 / 0</span>
+                        </div>
+
+                        <!-- Progress bar -->
+                        <div class="progress-wrap" id="progress-bar-container" onclick="seekByClick(event)">
+                            <div class="progress-fill" id="progress-bar-fill" style="width:0%">
+                                <div class="progress-thumb"></div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chart card -->
+            <div class="chart-card">
+                <div class="chart-header">
+                    <span class="chart-title">力度曲线 &amp; 拇食指距离</span>
+                    <span class="chart-legend-hint">
+                        <span><span class="legend-dot" style="background:#667eea"></span>左手力度</span>
+                        <span><span class="legend-dot" style="background:#ed8936"></span>右手力度</span>
+                        <span><span class="legend-dot" style="background:#48bb78"></span>拇食指距离</span>
+                    </span>
+                </div>
+                <div id="force-chart"><div class="loading-state">选择 Episode 后显示</div></div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script>
+    const LEROBOT_DIR = {{ lerobot_dir | tojson }};
+    const dirParam = encodeURIComponent(LEROBOT_DIR);
+</script>
+<script src="{{ url_for('static', filename='js/lerobot_viewer.js') }}?v=4"></script>
+</body>
+</html>

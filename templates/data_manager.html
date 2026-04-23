@@ -211,6 +211,15 @@
         .status-badge.partial { background: #e1bee7; color: #7b1fa2; }
         .status-badge.segmented { background: #b3e5fc; color: #0277bd; }
         .status-badge.converted { background: #a5d6a7; color: #1b5e20; border: 1px solid #66bb6a; }
+        .status-badge.deprecated { background: #bdbdbd; color: #616161; }
+
+        .data-card.deprecated-card {
+            opacity: 0.5;
+            filter: grayscale(60%);
+        }
+        .data-card.deprecated-card:hover {
+            opacity: 0.75;
+        }
 
         .data-card-actions {
             padding: 15px;
@@ -581,9 +590,12 @@
                 const hasOffset = group.offset_config !== null && group.offset_config !== undefined;
                 const hasSegments = group.segments && group.segments.total > 0;
                 const hasConversion = group.conversion && group.conversion.has_info;
+                const isDeprecated = group.deprecated === true;
 
                 let statusBadge = '';
-                if (hasConversion) {
+                if (isDeprecated) {
+                    statusBadge = '<span class="status-badge deprecated">作废</span>';
+                } else if (hasConversion) {
                     statusBadge = '<span class="status-badge converted">已转换</span>';
                 } else if (hasSegments) {
                     statusBadge = '<span class="status-badge segmented">已分段</span>';
@@ -598,7 +610,7 @@
                 }
 
                 html += `
-                    <div class="data-card" id="card-${index}" data-index="${index}">
+                    <div class="data-card${isDeprecated ? ' deprecated-card' : ''}" id="card-${index}" data-index="${index}">
                         <div class="data-card-header">
                             <input type="checkbox" onchange="toggleSelection(${index})" ${selectedItems.has(index) ? 'checked' : ''}>
                             <div class="data-card-title" title="${group.name}">${group.name}</div>
@@ -727,13 +739,24 @@
                         <div class="data-card-actions">
                 `;
 
-                if (isReady) {
+                if (isReady && !isDeprecated) {
                     const alignBtnText = hasOffset ? '📋 查看/调整' : '🎯 对齐';
                     html += `<button class="btn-action btn-align" onclick="openAlignment(${index})">${alignBtnText}</button>`;
                 }
 
-                if (hasMps || hasVrs) {
+                if ((hasMps || hasVrs) && !isDeprecated) {
                     html += `<button class="btn-action btn-player" onclick="openPlayer(${index})">🎬 播放</button>`;
+                }
+
+                if (hasConversion && group.conversion.has_info && !isDeprecated) {
+                    html += `<button class="btn-action" style="background:#fff;color:#48bb78;border:1px solid #48bb78;font-size:0.8rem;" onclick="openLerobotViewer(${index})">📊 查看数据</button>`;
+                }
+
+                // Deprecate / restore button
+                if (isDeprecated) {
+                    html += `<button class="btn-action" style="background:#fff;color:#666;border:1px solid #ccc;" onclick="toggleDeprecated(${index}, false)">恢复</button>`;
+                } else {
+                    html += `<button class="btn-action" style="background:#fff;color:#999;border:1px solid #ddd;font-size:0.8rem;" onclick="toggleDeprecated(${index}, true)">标记作废</button>`;
                 }
 
                 html += `
@@ -754,6 +777,28 @@
                 document.getElementById(`card-${index}`).classList.add('selected');
             }
             updateBatchActions();
+        }
+
+        async function toggleDeprecated(index, deprecated) {
+            const group = allDataGroups[index];
+            try {
+                const response = await fetch('/data/api/toggle_deprecated', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        directory: currentDirectory,
+                        base_name: group.name,
+                        deprecated: deprecated
+                    })
+                });
+                const result = await response.json();
+                if (result.success) {
+                    group.deprecated = deprecated;
+                    renderDataGrid(allDataGroups);
+                }
+            } catch (e) {
+                console.error('Failed to toggle deprecated:', e);
+            }
         }
 
         function updateBatchActions() {
@@ -844,6 +889,13 @@
             }
 
             window.location.href = '/player?load=1&' + params.toString();
+        }
+
+        function openLerobotViewer(index) {
+            const group = allDataGroups[index];
+            const dir = group.conversion && group.conversion.output_dir;
+            if (!dir) return;
+            window.open(`/lerobot-viewer?dir=${encodeURIComponent(dir)}`, '_blank');
         }
 
         function batchAlign() {

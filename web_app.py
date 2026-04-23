@@ -15,6 +15,7 @@ Dependencies:
 import os
 import sys
 import json
+from urllib.parse import quote as url_quote
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file
@@ -905,9 +906,9 @@ def run_conversion():
             print(f"[run_conversion] Could not compute time base delta (using 0): {e}")
 
         # haptic_time_offset = slider 值直接传（用户手动标定已包含时间基准差）
-        # segment_time_offset = delta_s（segment 在 Aria 时间轴，需转到 VRS 相机时间轴）
+        # segment_time_offset = 0（slider 调整后 segment 已在 VRS 相机时间，无需再加 delta_s）
         print(f"[run_conversion] haptic_time_offset: {haptic_offset:.3f}s (slider value, direct)")
-        print(f"[run_conversion] segment_time_offset: {delta_s:.3f}s")
+        print(f"[run_conversion] segment_time_offset: 0.0 (segments already in VRS camera time after slider adjustment)")
 
         convert_kwargs = {
             'vrs_path': vrs_path,
@@ -916,7 +917,7 @@ def run_conversion():
             'haptic_csv': haptic_csv,
             'haptic_time_offset': haptic_offset,
             'segments_csv': segments_csv_path,
-            'segment_time_offset': delta_s,  # 补偿 segment 时间基准差
+            'segment_time_offset': 0.0,  # segment 已在 VRS 相机时间（slider 已补偿 delta_s）
             'overwrite': True,
             'task_name': task_name,
             'log_level': 'INFO',
@@ -1198,6 +1199,139 @@ def conversion_status(job_id):
         stack_trace = traceback.format_exc()
         print(f"Error: {error_msg}\n{stack_trace}")
         return jsonify({'error': error_msg, 'traceback': stack_trace}), 500
+
+
+@app.route('/lerobot-viewer')
+def lerobot_viewer():
+    """Render LeRobot dataset viewer page"""
+    lerobot_dir = request.args.get('dir', '')
+    return render_template('lerobot_viewer.html', lerobot_dir=lerobot_dir)
+
+
+@app.route('/api/lerobot/episodes')
+def lerobot_episodes():
+    """List all episodes in a LeRobot dataset"""
+    lerobot_dir = request.args.get('dir', '')
+    if not lerobot_dir or not os.path.isdir(lerobot_dir):
+        return jsonify({'success': False, 'error': f'Directory not found: {lerobot_dir}'}), 400
+    try:
+        info_path = Path(lerobot_dir) / 'meta' / 'info.json'
+        if not info_path.exists():
+            return jsonify({'success': False, 'error': 'meta/info.json not found'}), 400
+        with open(info_path) as f:
+            info = json.load(f)
+
+        episodes = []
+        episodes_path = Path(lerobot_dir) / 'meta' / 'episodes.jsonl'
+        if episodes_path.exists():
+            with open(episodes_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        episodes.append(json.loads(line))
+        else:
+            for i in range(info.get('total_episodes', 0)):
+                episodes.append({'episode_index': i, 'length': None, 'tasks': []})
+
+        return jsonify({
+            'success': True,
+            'total_episodes': info.get('total_episodes', len(episodes)),
+            'fps': info.get('fps'),
+            'episodes': episodes,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/lerobot/episode/<int:episode_n>')
+def lerobot_episode(episode_n):
+    """Get data for a single episode"""
+    lerobot_dir = request.args.get('dir', '')
+    if not lerobot_dir or not os.path.isdir(lerobot_dir):
+        return jsonify({'success': False, 'error': f'Directory not found: {lerobot_dir}'}), 400
+    try:
+        info_path = Path(lerobot_dir) / 'meta' / 'info.json'
+        with open(info_path) as f:
+            info = json.load(f)
+        fps = info.get('fps', 10.0)
+
+        parquet_path = Path(lerobot_dir) / 'data' / 'chunk-000' / f'episode_{episode_n:06d}.parquet'
+        if not parquet_path.exists():
+            return jsonify({'success': False, 'error': f'Episode {episode_n} not found'}), 404
+
+        df = pd.read_parquet(parquet_path)
+        timestamps = df['timestamp'].tolist()
+        force_left = df['action.tactile.left.force_total'].tolist() if 'action.tactile.left.force_total' in df.columns else []
+        force_right = df['action.tactile.right.force_total'].tolist() if 'action.tactile.right.force_total' in df.columns else []
+
+        # Compute thumb-index distance from observation.state if available (63-dim hand landmarks)
+        thumb_index_dist = []
+        if 'observation.state' in df.columns:
+            state_len = len(df['observation.state'].iloc[0]) if len(df) > 0 else 0
+            if state_len >= 6:
+                for state in df['observation.state']:
+                    thumb = np.array(state[0:3], dtype=float)
+                    index = np.array(state[3:6], dtype=float)
+                    if not (np.any(np.isnan(thumb)) or np.any(np.isnan(index))):
+                        thumb_index_dist.append(float(np.linalg.norm(thumb - index)))
+                    else:
+                        thumb_index_dist.append(None)
+
+        video_url = f'/api/lerobot/video/{episode_n}?dir={url_quote(lerobot_dir)}'
+        return jsonify({
+            'success': True,
+            'episode_index': episode_n,
+            'length': len(df),
+            'fps': fps,
+            'timestamps': timestamps,
+            'force_left': force_left,
+            'force_right': force_right,
+            'thumb_index_dist': thumb_index_dist,
+            'video_url': video_url,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/lerobot/video/<int:episode_n>')
+def lerobot_video(episode_n):
+    """Serve episode MP4 video, transcoding to H.264 if needed for browser compatibility"""
+    lerobot_dir = request.args.get('dir', '')
+    if not lerobot_dir or not os.path.isdir(lerobot_dir):
+        return jsonify({'error': 'Directory not found'}), 400
+    video_path = Path(lerobot_dir) / 'videos' / 'chunk-000' / 'observation.images.main' / f'episode_{episode_n:06d}.mp4'
+    if not video_path.exists():
+        return jsonify({'error': f'Video not found: {video_path}'}), 404
+
+    serve_path = _ensure_h264(video_path)
+    return send_file(str(serve_path), mimetype='video/mp4', conditional=True)
+
+
+def _ensure_h264(video_path: Path) -> Path:
+    """Return an H.264-encoded copy of video_path, transcoding if necessary."""
+    import subprocess
+    h264_path = video_path.with_suffix('.h264.mp4')
+    if h264_path.exists():
+        return h264_path
+
+    # Check codec of original file
+    probe = subprocess.run(
+        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+         '-show_entries', 'stream=codec_name', '-of', 'default=nw=1:nk=1', str(video_path)],
+        capture_output=True, text=True
+    )
+    codec = probe.stdout.strip()
+    if codec == 'h264':
+        return video_path  # already H.264, serve directly
+
+    # Transcode to H.264 with fast-start for immediate browser seeking
+    subprocess.run(
+        ['ffmpeg', '-y', '-i', str(video_path),
+         '-vcodec', 'libx264', '-crf', '20', '-preset', 'fast',
+         '-movflags', '+faststart', str(h264_path)],
+        capture_output=True
+    )
+    return h264_path if h264_path.exists() else video_path
 
 
 @app.route('/player')
@@ -1498,6 +1632,16 @@ def scan_data_directory(directory):
     if not directory.exists():
         return []
 
+    # Load deprecated list
+    deprecated_set = set()
+    dep_path = directory / 'alignment_configs' / 'deprecated.json'
+    if dep_path.exists():
+        try:
+            with open(dep_path, 'r') as f:
+                deprecated_set = set(json.load(f))
+        except Exception:
+            pass
+
     # First, scan for offset config files to know which groups have alignment
     # Check both alignment_configs/ subfolder and root dir (backward compat)
     # Store both by exact name and by VRS-related name for matching
@@ -1568,7 +1712,8 @@ def scan_data_directory(directory):
                 'has_hand_tracking': False,
                 'size_mb': 0,
                 'duration_s': None,
-                'offset_config': find_offset_config(base_name)
+                'offset_config': find_offset_config(base_name),
+                'deprecated': base_name in deprecated_set
             }
 
         data_groups[base_name]['vrs_file'] = str(vrs_file)
@@ -1630,7 +1775,8 @@ def scan_data_directory(directory):
                     'has_hand_tracking': False,
                     'size_mb': 0,
                     'duration_s': None,
-                    'offset_config': find_offset_config(csv_base)
+                    'offset_config': find_offset_config(csv_base),
+                    'deprecated': csv_base in deprecated_set
                 }
             data_groups[csv_base]['csv_files'].append({
                 'path': str(csv_file),
@@ -1690,6 +1836,10 @@ def scan_data_directory(directory):
     for base_name in data_groups:
         lerobot_dir = directory / f'{base_name}_lerobot'
         if lerobot_dir.is_dir():
+            # Skip directories that only contain NFS stale handles
+            real_children = [c for c in lerobot_dir.iterdir() if not c.name.startswith('.nfs')]
+            if not real_children:
+                continue
             info_path = lerobot_dir / 'meta' / 'info.json'
             conv_info = {
                 'output_dir': str(lerobot_dir),
@@ -1759,8 +1909,12 @@ def list_directories():
     root_dir = request.args.get('root', get_data_root())
 
     try:
+        t0 = time_module.time()
         subdirs = scan_subdirectories(root_dir)
+        print(f'[TIMING] scan_subdirectories: {time_module.time()-t0:.2f}s', flush=True)
+        t1 = time_module.time()
         root_files = scan_data_directory(root_dir)
+        print(f'[TIMING] scan_data_directory: {time_module.time()-t1:.2f}s', flush=True)
 
         return jsonify({
             'success': True,
@@ -1867,6 +2021,39 @@ def save_offset():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@app.route('/data/api/toggle_deprecated', methods=['POST'])
+def toggle_deprecated():
+    """Toggle deprecated status for a dataset."""
+    data = request.get_json()
+    directory = data.get('directory')
+    base_name = data.get('base_name')
+    deprecated = data.get('deprecated', True)
+
+    if not directory or not base_name:
+        return jsonify({'success': False, 'error': 'Missing directory or base_name'}), 400
+
+    try:
+        config_dir = _get_config_dir(directory)
+        dep_path = os.path.join(config_dir, 'deprecated.json')
+
+        dep_list = []
+        if os.path.exists(dep_path):
+            with open(dep_path, 'r') as f:
+                dep_list = json.load(f)
+
+        if deprecated and base_name not in dep_list:
+            dep_list.append(base_name)
+        elif not deprecated and base_name in dep_list:
+            dep_list.remove(base_name)
+
+        with open(dep_path, 'w') as f:
+            json.dump(dep_list, f)
+
+        return jsonify({'success': True, 'deprecated': deprecated})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/gripper')
